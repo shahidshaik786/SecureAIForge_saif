@@ -5,17 +5,17 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-required-336791)
 ![Ollama](https://img.shields.io/badge/Ollama-AI%20required-111827)
 ![Security](https://img.shields.io/badge/Security-authorized%20testing-red)
-![Status](https://img.shields.io/badge/status-active%20development-yellow)
+![Status](https://img.shields.io/badge/status-in%20development-yellow)
 
 AI-assisted authorized security testing framework for Web, API, authentication, authorization, evidence collection, and reporting.
 
-> Use only on authorized testing, staging, lab, or non-production environments. The tester is responsible for confirming scope, approval, and the impact of every test.
+> SAIF is in development. Use only on authorized testing, staging, lab, or non-production environments. The tester is responsible for confirming scope, approval, and the impact of every test.
 
 ## What Is SAIF?
 
 SAIF is a local dashboard-driven security testing platform. It combines deterministic Web/API discovery, tool orchestration, PostgreSQL-backed evidence storage, Ollama-assisted planning/review, and HTML/JSON reporting.
 
-SAIF is designed to support black-box and gray-box Web/API testing today, with source-assisted white-box workflows planned.
+SAIF is designed to support black-box and gray-box Web/API testing today. Source-assisted white-box workflows may be added later when useful.
 
 ## Why SAIF?
 
@@ -23,7 +23,7 @@ Modern API security work needs more than a basic scanner. SAIF tracks projects, 
 
 ## Current Development Status
 
-SAIF is under active development. It is not yet a replacement for a professional tester. AI output must be reviewed by a human. Do not use SAIF against targets without written authorization.
+SAIF is still in development. Changes, fixes, and new features will be uploaded as the project evolves and as time permits. It is not yet a replacement for a professional tester. AI output must be reviewed by a human. Do not use SAIF against targets without written authorization.
 
 Mature foundation:
 - [x] Local dashboard
@@ -33,7 +33,7 @@ Mature foundation:
 - [x] Evidence storage
 - [x] JSON/HTML report foundation
 
-In progress:
+In development:
 - [ ] Full authenticated authorization workflow
 - [ ] Network/host modules
 - [ ] DOCX/PDF reports
@@ -52,26 +52,20 @@ In progress:
 
 ## Dashboard Screenshots
 
-Screenshots will be updated as the dashboard stabilizes.
-
-- ![Dashboard Overview](screenshots/dashboard-overview.png)
-- ![Scan Control](screenshots/scan-control.png)
-- ![Live Monitor](screenshots/live-monitor.png)
-- ![Findings](screenshots/findings.png)
-- ![Report Example](screenshots/report-example.png)
+Screenshots are not included yet. They will be uploaded after the dashboard views stabilize. Broken placeholder images have intentionally been removed.
 
 ## Supported Testing Modes
 
 - **black-box:** target URL only; public discovery, API inventory, auth discovery, method probing, and unauthenticated checks.
 - **gray-box:** target plus credentials/test accounts/API keys; authenticated crawling, session/JWT testing, authorization matrix, BOLA/IDOR, BFLA, and business logic where prerequisites exist.
-- **white-box:** planned source-assisted mode for endpoint discovery and remediation suggestions. Source code access is optional and never assumed.
+- **white-box:** optional future/source-assisted mode for endpoint discovery and remediation suggestions. Source code access is optional and never assumed.
 
 ## Supported Targets
 
 - Web/API applications
 - crAPI lab
 - Generic REST APIs
-- Network/host testing roadmap
+- Network/host testing modules in development
 
 ## AI/Ollama Role
 
@@ -156,18 +150,10 @@ examples/             sample credentials and scan configs
 ./saif.sh doctor --target http://127.0.0.1:8888
 ```
 
-## Roadmap
-
-See [ROADMAP.md](ROADMAP.md).
-
 ## Disclaimer
 
-SAIF is designed for authorized testing environments only. It does not decide whether a tester is legally allowed to test a system. The tester must confirm scope, authorization, and environment before execution.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+SAIF is designed for authorized testing environments only. It does not decide whether a tester is legally allowed to test a system. The tester must confirm scope, authorization, and environment before execution. The author does not accept responsibility for misuse, unauthorized testing, service disruption, data loss, legal issues, or any activity performed with this tool.
 
 ## Author / Maintainer
 
-Maintainer: project owner. Add contact details before public release.
+Author and maintainer: Galib Shahid Shaik.

@@ -6,8 +6,7 @@
 - [ ] Run lint if available
 - [ ] Run doctor
 - [ ] Start dashboard locally
-- [ ] Capture screenshots
-- [ ] Update README screenshots
+- [ ] Add real screenshots when ready
 - [ ] Confirm disclaimer
 - [ ] Confirm license
 - [ ] Commit

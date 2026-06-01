@@ -1,9 +1,5 @@
 # Screenshots
 
-Screenshots will be updated as the dashboard stabilizes.
+Screenshots are not included yet.
 
-- `screenshots/dashboard-overview.png`
-- `screenshots/scan-control.png`
-- `screenshots/live-monitor.png`
-- `screenshots/findings.png`
-- `screenshots/report-example.png`
+Earlier placeholder `.png` files were removed because they were not real image files and did not render on GitHub. Real dashboard screenshots will be uploaded after the interface stabilizes.
