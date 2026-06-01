@@ -1,0 +1,9 @@
+tests:
+  - id: missing_token
+    description: Request without Authorization header should be rejected.
+  - id: malformed_token
+    description: Request with malformed bearer token should be rejected.
+  - id: role_claim_tamper
+    description: Controlled role claim tampering should be rejected.
+  - id: alg_none
+    description: alg=none test is planned only when explicitly enabled.

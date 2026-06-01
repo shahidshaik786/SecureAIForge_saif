@@ -1,0 +1,18 @@
+profile_id: windows-server
+display_name: Windows Server
+target_types:
+  - host
+agents:
+  - host_discovery_agent
+  - service_enum_agent
+  - smb_agent
+  - rdp_agent
+  - database_service_agent
+capabilities:
+  - tcp_top_ports
+  - service_version_enumeration
+  - smb_exposure_checks
+  - rdp_exposure_checks
+  - database_service_exposure
+method_policy:
+  no_destructive_methods_default: true

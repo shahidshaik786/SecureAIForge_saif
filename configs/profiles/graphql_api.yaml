@@ -1,0 +1,37 @@
+profile_id: graphql_api
+display_name: GraphQL API
+detection_rules:
+  contains:
+    - graphql
+    - __schema
+  route_contains:
+    - /graphql
+  api_style: graphql
+api_base_candidates:
+  - /graphql
+  - /api/graphql
+auth_endpoint_candidates:
+  - /login
+  - /auth/login
+  - /api/auth/login
+login_payload_templates:
+  - email: "{{email}}"
+    password: "{{password}}"
+session_type: bearer_or_cookie
+token_locations:
+  - authorization_header
+  - set-cookie
+common_protected_endpoints:
+  - /graphql
+object_id_fields:
+  - id
+  - nodeId
+  - uuid
+supported_test_categories:
+  - graphql_introspection
+  - authentication
+  - authorization
+  - input_validation
+payload_strategy:
+  graphql: introspection-if-allowed
+  jwt: baseline-vs-tampered

@@ -1,0 +1,24 @@
+profile_id: internal-network
+display_name: Internal Network
+target_types:
+  - subnet
+agents:
+  - network_recon_agent
+  - host_discovery_agent
+  - service_enum_agent
+  - smb_agent
+  - snmp_agent
+  - ssh_agent
+  - rdp_agent
+  - database_service_agent
+capabilities:
+  - host_discovery
+  - tcp_top_ports
+  - service_version_enumeration
+  - smb_exposure_checks
+  - snmp_exposure_checks
+  - database_service_exposure
+  - remote_admin_exposure
+method_policy:
+  no_destructive_methods_default: true
+  credentialed_checks_require_credentials: true

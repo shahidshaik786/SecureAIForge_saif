@@ -1,0 +1,49 @@
+profile_id: spa_react_api
+display_name: React SPA with API Backend
+detection_rules:
+  contains:
+    - react
+    - react-dom
+    - static/js
+  frontend_framework: react
+api_base_candidates:
+  - /api
+  - /api/v1
+  - /api/v2
+  - /auth
+auth_endpoint_candidates:
+  - /login
+  - /register
+  - /api/auth/login
+  - /api/auth/register
+  - /api/users/login
+login_payload_templates:
+  - email: "{{email}}"
+    password: "{{password}}"
+  - username: "{{username}}"
+    password: "{{password}}"
+registration_payload_templates:
+  - email: "{{email}}"
+    password: "{{password}}"
+session_type: bearer_jwt_or_cookie
+token_locations:
+  - localStorage
+  - sessionStorage
+  - json.access_token
+  - set-cookie
+common_protected_endpoints:
+  - /api/me
+  - /api/profile
+  - /api/user
+object_id_fields:
+  - id
+  - uuid
+  - user_id
+supported_test_categories:
+  - authentication
+  - authorization
+  - jwt
+  - input_validation
+payload_strategy:
+  xss: reflected-and-dom-sink-review
+  sqli: api-parameter-comparison

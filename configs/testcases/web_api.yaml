@@ -1,0 +1,133 @@
+profile: web-api
+phases:
+  - recon
+  - web_enumeration
+  - api_enumeration
+  - authentication_discovery
+  - registration
+  - login_session
+  - authenticated_crawling
+  - authorization_testing
+  - input_validation
+  - reporting
+test_cases:
+  - id: recon.http_baseline
+    phase: recon
+    agent: recon
+    name: HTTP baseline request
+    tool: http_client
+    enabled: true
+    deterministic: true
+    description: Capture status, headers, redirects, and a response preview for the target.
+  - id: web_enumeration.root_links
+    phase: web_enumeration
+    agent: web_enumeration
+    name: Root document link inventory placeholder
+    tool: http_client
+    enabled: true
+    deterministic: true
+    description: Reuse the baseline response as evidence for later crawler expansion.
+  - id: api_enumeration.openapi_discovery
+    phase: api_enumeration
+    agent: api_enumeration
+    name: OpenAPI and Swagger discovery skeleton
+    tool: swagger-discovery
+    enabled: true
+    deterministic: false
+    description: Registry entry for future OpenAPI document discovery.
+  - id: authentication_discovery.login_flow
+    phase: authentication_discovery
+    agent: authentication
+    name: Login flow detector skeleton
+    tool: login-flow-detector
+    enabled: true
+    deterministic: false
+    description: Registry entry for detecting login forms and auth endpoints.
+  - id: registration.registration_flow
+    phase: registration
+    agent: authentication
+    name: Registration flow detector skeleton
+    tool: registration-flow-detector
+    enabled: true
+    deterministic: false
+    description: Registry entry for detecting registration flows.
+  - id: login_session.session_manager
+    phase: login_session
+    agent: authentication
+    name: Session manager skeleton
+    tool: session-manager
+    enabled: true
+    deterministic: false
+    description: Registry entry for credential-backed session creation.
+  - id: authenticated_crawling.authenticated_routes
+    phase: authenticated_crawling
+    agent: web_enumeration
+    name: Authenticated crawling skeleton
+    tool: katana
+    enabled: true
+    deterministic: false
+    description: Registry entry for future authenticated route inventory.
+  - id: authorization_testing.idor_bola
+    phase: authorization_testing
+    agent: authorization
+    name: IDOR and BOLA tester skeleton
+    tool: idor-bola-tester
+    enabled: true
+    deterministic: false
+    description: Registry entry for replay-based object authorization testing.
+  - id: authorization_testing.bfla
+    phase: authorization_testing
+    agent: authorization
+    name: BFLA tester skeleton
+    tool: bfla-tester
+    enabled: true
+    deterministic: false
+    description: Registry entry for role/function authorization testing.
+  - id: input_validation.xss
+    phase: input_validation
+    agent: input_validation
+    name: XSS checker skeleton
+    tool: xss-checker
+    enabled: true
+    deterministic: false
+    description: Registry entry only; random payload testing is intentionally not implemented.
+  - id: input_validation.sqli
+    phase: input_validation
+    agent: input_validation
+    name: SQL injection checker skeleton
+    tool: sqli-checker
+    enabled: true
+    deterministic: false
+    description: Registry entry only; random payload testing is intentionally not implemented.
+  - id: input_validation.ssrf
+    phase: input_validation
+    agent: input_validation
+    name: SSRF checker skeleton
+    tool: ssrf-checker
+    enabled: true
+    deterministic: false
+    description: Registry entry only; random payload testing is intentionally not implemented.
+  - id: input_validation.path_traversal
+    phase: input_validation
+    agent: input_validation
+    name: Path traversal checker skeleton
+    tool: path-traversal-checker
+    enabled: true
+    deterministic: false
+    description: Registry entry only; random payload testing is intentionally not implemented.
+  - id: reporting.json
+    phase: reporting
+    agent: reporting
+    name: JSON report generation
+    tool: json-report
+    enabled: true
+    deterministic: true
+    description: Produce evidence-backed JSON report output.
+  - id: reporting.html
+    phase: reporting
+    agent: reporting
+    name: HTML report generation
+    tool: html-report
+    enabled: true
+    deterministic: true
+    description: Produce evidence-backed HTML report output.

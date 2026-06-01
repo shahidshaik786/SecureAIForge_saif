@@ -1,0 +1,17 @@
+profile_id: database-server
+display_name: Database Server
+target_types:
+  - host
+agents:
+  - host_discovery_agent
+  - service_enum_agent
+  - database_service_agent
+  - tls_agent
+capabilities:
+  - database_service_exposure
+  - tcp_top_ports
+  - service_version_enumeration
+  - tls_certificate_cipher_checks
+method_policy:
+  no_destructive_methods_default: true
+  credentialed_checks_require_credentials: true

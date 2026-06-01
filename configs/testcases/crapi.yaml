@@ -1,0 +1,180 @@
+profile: crapi
+extends: web-api
+phases:
+  - enumeration
+  - api_discovery
+  - auth_mapping
+  - account_provisioning
+  - login_session
+  - session_validation
+  - token_analysis
+  - authenticated_crawling
+  - authorization_testing
+  - bola_idor
+  - bfla
+  - mass_assignment
+  - jwt_session
+  - rate_limit_otp
+  - input_validation_testing
+  - business_logic_testing
+  - reporting
+  - production_readiness_decision
+test_cases:
+  - id: crapi.discovery
+    phase: enumeration
+    agent: recon_agent
+    name: crAPI discovery and fingerprinting
+    tool: api_profile_probe
+    enabled: true
+    deterministic: true
+    category: discovery
+    description: Detect crAPI profile indicators and inventory public application surfaces.
+  - id: crapi.auth_endpoint_discovery
+    phase: auth_mapping
+    agent: auth_agent
+    name: crAPI authentication endpoint discovery
+    tool: auth_session_mapping
+    enabled: true
+    category: authentication
+    prerequisites: ["reachable target"]
+    required_artifacts: ["discovered_auth_flows"]
+  - id: crapi.account_provisioning
+    phase: account_provisioning
+    agent: auth_agent
+    name: crAPI test account provisioning
+    tool: account_provisioning
+    enabled: true
+    category: authentication
+    prerequisites: ["registration endpoint", "operator account generation approval"]
+    required_artifacts: ["credentials"]
+  - id: crapi.login_session
+    phase: login_session
+    agent: auth_agent
+    name: crAPI login and session creation
+    tool: login_session
+    enabled: true
+    category: authentication
+    prerequisites: ["valid test credentials", "login endpoint"]
+    required_artifacts: ["authenticated_sessions"]
+  - id: crapi.session_validation
+    phase: session_validation
+    agent: auth_agent
+    name: crAPI authenticated session validation
+    tool: session_validation
+    enabled: true
+    category: session_management
+    prerequisites: ["authenticated session"]
+  - id: crapi.token_analysis
+    phase: token_analysis
+    agent: token_agent
+    name: crAPI token and JWT analysis
+    tool: token_analysis
+    enabled: true
+    category: jwt_session
+    prerequisites: ["captured token or session cookie"]
+    required_artifacts: ["discovered_tokens"]
+  - id: crapi.authenticated_crawling
+    phase: authenticated_crawling
+    agent: web_discovery_agent
+    name: crAPI authenticated API crawling
+    tool: authenticated_crawling
+    enabled: true
+    category: api_discovery
+    prerequisites: ["authenticated session"]
+  - id: crapi.authorization_matrix
+    phase: authorization_testing
+    agent: authorization_agent
+    name: crAPI authorization matrix
+    tool: authorization_matrix
+    enabled: true
+    category: authorization
+    prerequisites: ["authenticated sessions", "protected endpoints"]
+  - id: crapi.bola_idor
+    phase: bola_idor
+    agent: authorization_agent
+    name: crAPI BOLA and IDOR testing
+    tool: idor_bola_bfla_planner
+    enabled: true
+    category: bola_idor
+    prerequisites: ["two user sessions", "object identifiers"]
+    required_artifacts: ["discovered_objects", "authenticated_sessions"]
+  - id: crapi.bfla
+    phase: bfla
+    agent: authorization_agent
+    name: crAPI BFLA testing
+    tool: idor_bola_bfla_planner
+    enabled: true
+    category: bfla
+    prerequisites: ["roles or function endpoints"]
+  - id: crapi.mass_assignment
+    phase: mass_assignment
+    agent: input_validation_agent
+    name: crAPI mass assignment testing
+    tool: input_validation_planner
+    enabled: true
+    category: mass_assignment
+    prerequisites: ["JSON API parameters"]
+  - id: crapi.jwt_session
+    phase: jwt_session
+    agent: token_agent
+    name: crAPI JWT and session security testing
+    tool: jwt_adaptive
+    enabled: true
+    category: jwt_session
+    prerequisites: ["JWT or bearer token"]
+  - id: crapi.otp_rate_limit
+    phase: rate_limit_otp
+    agent: input_validation_agent
+    name: crAPI OTP and rate-limit testing
+    tool: input_validation_planner
+    enabled: true
+    category: rate_limiting
+    prerequisites: ["OTP or rate-sensitive endpoint"]
+  - id: crapi.xss
+    phase: input_validation_testing
+    agent: input_validation_agent
+    name: crAPI XSS testing
+    tool: xss_adaptive
+    enabled: true
+    category: xss
+    prerequisites: ["reflected or stored parameters"]
+  - id: crapi.sqli
+    phase: input_validation_testing
+    agent: input_validation_agent
+    name: crAPI SQL injection testing
+    tool: sqli_adaptive
+    enabled: true
+    category: sqli
+    prerequisites: ["query, path, or JSON parameters"]
+  - id: crapi.ssrf_if_applicable
+    phase: input_validation_testing
+    agent: input_validation_agent
+    name: crAPI SSRF testing when callback-like inputs exist
+    tool: ssrf_adaptive
+    enabled: true
+    category: ssrf
+    prerequisites: ["URL-like parameter or callback endpoint"]
+  - id: crapi.business_logic
+    phase: business_logic_testing
+    agent: business_logic_agent
+    name: crAPI business logic testing
+    tool: business_logic_planner
+    enabled: true
+    category: business_logic
+    prerequisites: ["discovered workflows"]
+  - id: crapi.report
+    phase: reporting
+    agent: reporting_agent
+    name: crAPI professional report generation
+    tool: html-report
+    enabled: true
+    deterministic: true
+    category: reporting
+  - id: crapi.production_readiness
+    phase: production_readiness_decision
+    agent: reporting_agent
+    name: crAPI production readiness decision
+    tool: production_readiness
+    enabled: true
+    deterministic: true
+    category: reporting

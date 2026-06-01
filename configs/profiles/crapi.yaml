@@ -1,0 +1,78 @@
+profile_id: crapi
+display_name: crAPI
+detection_rules:
+  contains:
+    - crAPI
+    - completely ridiculous API
+    - OWASP API Top 10
+  route_contains:
+    - /identity/api
+    - /workshop/api
+    - /community/api
+  api_style: rest
+  token_style: jwt
+api_base_candidates:
+  - /identity/api
+  - /identity/api/auth
+  - /identity/api/v2
+  - /workshop/api
+  - /community/api/v2
+auth_endpoint_candidates:
+  - /identity/api/auth/signup
+  - /identity/api/auth/login
+  - /identity/api/auth/verify
+  - /identity/api/auth/forget-password
+  - /identity/api/auth/v2/check-otp
+  - /identity/api/auth/v3/check-otp
+endpoint_candidates:
+  - /identity/api/auth/signup
+  - /identity/api/auth/login
+  - /identity/api/auth/verify
+  - /identity/api/auth/forget-password
+  - /identity/api/auth/v2/check-otp
+  - /identity/api/auth/v3/check-otp
+  - /identity/api/v2/user
+  - /identity/api/v2/vehicle
+  - /workshop/api/shop
+  - /workshop/api/mechanic
+  - /community/api/v2/community/posts
+  - /community/api/v2/coupon/validate-coupon
+  - /community/api/v2/user/videos
+registration_payload_templates:
+  - name: SAIF Test User
+    email: "{{email}}"
+    number: "{{phone}}"
+    password: "{{password}}"
+login_payload_templates:
+  - email: "{{email}}"
+    password: "{{password}}"
+session_type: bearer_jwt
+token_locations:
+  - json.access_token
+  - json.token
+  - authorization_header
+common_protected_endpoints:
+  - /identity/api/v2/user
+  - /identity/api/v2/vehicle
+  - /workshop/api/shop
+  - /workshop/api/mechanic
+  - /community/api/v2/community/posts
+  - /community/api/v2/user/videos
+object_id_fields:
+  - id
+  - user_id
+  - vehicle_id
+  - post_id
+  - coupon_id
+  - uuid
+supported_test_categories:
+  - authentication
+  - authorization
+  - jwt
+  - input_validation
+  - business_logic
+payload_strategy:
+  xss: reflected-parameter-comparison
+  sqli: error-and-differential-comparison
+  ssrf: callback-required
+  jwt: baseline-vs-tampered

@@ -1,0 +1,5 @@
+target: http://127.0.0.1:8888
+profile: auto
+mode: black-box
+full: false
+destructive_test_policy: detect_only

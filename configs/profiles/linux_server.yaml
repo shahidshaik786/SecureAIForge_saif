@@ -1,0 +1,16 @@
+profile_id: linux-server
+display_name: Linux Server
+target_types:
+  - host
+agents:
+  - host_discovery_agent
+  - service_enum_agent
+  - ssh_agent
+  - tls_agent
+capabilities:
+  - tcp_top_ports
+  - service_version_enumeration
+  - ssh_weak_configuration_checks
+  - tls_certificate_cipher_checks
+method_policy:
+  no_destructive_methods_default: true

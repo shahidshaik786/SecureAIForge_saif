@@ -1,0 +1,311 @@
+{% extends "base.html" %}
+{% block content %}
+
+{% macro badge(value) -%}
+  <span class="badge badge-{{ (value | default('unknown', true) | string | lower | replace('_', '-') | replace(' ', '-')) }}">{{ value | default("unknown", true) }}</span>
+{%- endmacro %}
+
+{% macro empty_state(message) -%}
+  <div class="empty-state">{{ message }}</div>
+{%- endmacro %}
+
+{% if page == "overview" %}
+<section class="metric-grid">
+  <div class="metric-card"><span class="metric-icon">▦</span><div><p>Total Scans</p><strong>{{ overview.total_scans | default(0, true) }}</strong><small>All recorded assessments</small></div></div>
+  <div class="metric-card"><span class="metric-icon pulse">●</span><div><p>Running</p><strong>{{ overview.running_scans | default(0, true) }}</strong><small>Active scan workers</small></div></div>
+  <div class="metric-card"><span class="metric-icon success">✓</span><div><p>Completed</p><strong>{{ overview.completed_scans | default(0, true) }}</strong><small>Finished scan runs</small></div></div>
+  <div class="metric-card"><span class="metric-icon danger">!</span><div><p>Failed</p><strong>{{ overview.failed_scans | default(0, true) }}</strong><small>Needs operator review</small></div></div>
+  <div class="metric-card"><span class="metric-icon">◆</span><div><p>Total Findings</p><strong>{{ overview.total_findings | default(0, true) }}</strong><small>All severities</small></div></div>
+  <div class="metric-card"><span class="metric-icon warning">↻</span><div><p>Open Findings</p><strong>{{ overview.open_findings | default(0, true) }}</strong><small>Pending triage or fix</small></div></div>
+  <div class="metric-card"><span class="metric-icon critical">▲</span><div><p>Critical/High</p><strong>{{ (overview.critical_findings | default(0, true)) + (overview.high_findings | default(0, true)) }}</strong><small>Priority remediation</small></div></div>
+  <div class="metric-card"><span class="metric-icon warning">?</span><div><p>Manual Review</p><strong>{{ overview.manual_review_items | default(0, true) }}</strong><small>Human decision needed</small></div></div>
+</section>
+
+{% set overview_active_scan_id = overview.latest_active_scan_id | default(latest_active_scan_id | default(none, true), true) %}
+{% set overview_latest_scan_id = overview.latest_scan_id | default(latest_scan_id | default(none, true), true) %}
+<section class="command-strip">
+  <a class="button primary" href="/control">Start New Scan</a>
+  <a class="button" href="{{ '/scans/' ~ overview_active_scan_id ~ '/live' if overview_active_scan_id else '/live' }}">Open Live Monitor</a>
+  <a class="button" href="{{ '/scans/' ~ overview_latest_scan_id ~ '/control' if overview_latest_scan_id else '/scans' }}">Continue Scan</a>
+  <a class="button" href="{{ '/scans/' ~ overview_latest_scan_id if overview_latest_scan_id else '/reports' }}">Generate Reports</a>
+</section>
+
+<section class="grid2">
+  <div class="panel">
+    <div class="panel-title"><h2>Findings By Severity</h2><span class="muted">triage density</span></div>
+    {% set severity_counts = overview.severity_counts | default({}, true) %}
+    {% for severity in ["critical", "high", "medium", "low", "info"] %}
+      {% set count = severity_counts.get(severity, 0) %}
+      <div class="bar-row"><span>{{ badge(severity) }}</span><div class="bar-track"><div class="bar bar-{{ severity }}" style="width: {{ 4 + (count * 12) }}%"></div></div><strong>{{ count }}</strong></div>
+    {% endfor %}
+  </div>
+  <div class="panel">
+    <div class="panel-title"><h2>Findings By Status</h2><span class="muted">workflow state</span></div>
+    {% set status_counts = overview.status_counts | default({}, true) %}
+    {% if status_counts %}
+      {% for status, count in status_counts.items() %}
+      <div class="bar-row"><span>{{ badge(status) }}</span><div class="bar-track"><div class="bar" style="width: {{ 4 + (count * 12) }}%"></div></div><strong>{{ count }}</strong></div>
+      {% endfor %}
+    {% else %}
+      {{ empty_state("No findings have been recorded yet.") }}
+    {% endif %}
+  </div>
+  <div class="panel">
+    <div class="panel-title"><h2>Production Readiness</h2><span class="muted">decision distribution</span></div>
+    {% set readiness_counts = overview.readiness_counts | default({}, true) %}
+    {% if readiness_counts %}
+      <div class="status-card-grid">
+      {% for status, count in readiness_counts.items() %}
+        <div class="status-card">{{ badge(status) }}<strong>{{ count }}</strong></div>
+      {% endfor %}
+      </div>
+    {% else %}
+      {{ empty_state("No readiness decisions yet. Run a scan or open scan details.") }}
+    {% endif %}
+  </div>
+  <div class="panel">
+    <div class="panel-title"><h2>Top Affected Targets</h2><span class="muted">latest scan scope</span></div>
+    {% set targets = overview.top_affected_targets | default([], true) %}
+    {% if targets %}
+      <table><thead><tr><th>Scan</th><th>Target</th><th>Findings</th><th>Action</th></tr></thead><tbody>
+      {% for target in targets %}
+        <tr><td>#{{ target.scan_id }}</td><td class="mono">{{ target.target }}</td><td>{{ target.findings }}</td><td><a class="button mini" href="/scans/{{ target.scan_id }}">View</a></td></tr>
+      {% endfor %}
+      </tbody></table>
+    {% else %}
+      {{ empty_state("No targets yet. Start a scan from Scan Control.") }}
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if page == "control" %}
+<section class="grid2 command-grid">
+  <div class="panel control-panel">
+  <div class="panel-title"><h2>Start New Scan</h2><span class="muted">AI-required planning and execution</span></div>
+    <form data-start-scan>
+      <label>Target URL<input name="target" type="url" placeholder="http://172.18.144.1:8888" required></label>
+      <label>Profile<select name="profile"><option value="auto">auto</option><option value="crapi">crapi</option><option value="generic-rest">generic-rest</option><option value="web-api">web-api</option></select></label>
+      <label>Engagement Mode<select name="mode"><option value="black-box">black-box</option><option value="gray-box">gray-box</option><option value="white-box">white-box</option></select></label>
+      <label>Auth Mode<select name="auth_mode"><option value="auto">auto</option><option value="username_password">username_password</option><option value="bearer_token">bearer_token</option><option value="api_key">api_key</option><option value="cookie_session">cookie_session</option><option value="manual_session_import">manual_session_import</option><option value="sso_manual_assisted">sso_manual_assisted</option></select></label>
+      <label>Destructive Method Policy<select name="destructive_method_policy"><option value="no_destructive_methods">Do not execute destructive methods</option><option value="detect_only">Detect destructive methods only</option><option value="test_owned_only" selected>Execute only on test-owned resources</option><option value="manual_confirmation">Require manual confirmation before destructive action</option></select></label>
+      <label>Destructive Test Policy<select name="destructive_test_policy"><option value="disabled">disabled</option><option value="detect_only" selected>detect_only</option><option value="test_owned_only">test_owned_only</option><option value="manual_confirmation">manual_confirmation</option><option value="lab_full_allowed">lab_full_allowed</option></select></label>
+      <div class="warning-box" data-destructive-warning>Destructive test cases can create, modify, or delete test data. Use this only for approved lab/testing environments and test-owned resources.</div>
+      <label>Credentials file path<input name="credentials_path" placeholder="configs/credentials.yaml"></label>
+      <label data-source-path>Source path<input name="source_path" placeholder="/path/to/source"></label>
+      <div class="check-row"><label><input name="full" type="checkbox"> Full workflow</label><label><input name="enumeration_only" type="checkbox"> Enumeration only</label><label><input name="debug" type="checkbox" checked> Debug live output</label></div>
+      <div class="check-row"><label><input name="allow_account_generation" type="checkbox"> Allow SAIF to create test accounts if registration is available</label><label><input name="allow_authenticated_testing" type="checkbox"> Allow authenticated testing</label><label><input name="allow_authorization_testing" type="checkbox"> Allow authorization testing</label><label><input name="allow_payload_testing" type="checkbox"> Allow payload testing</label><label><input name="allow_rate_limit_testing" type="checkbox"> Allow rate-limit / OTP testing</label><label><input name="enable_destructive_tests" type="checkbox"> Enable destructive test cases</label><label><input name="allow_test_owned_object_creation" type="checkbox"> Allow test-owned object creation</label></div>
+      <div class="test-category-box">
+        <div class="panel-title"><h3>Test Case Selection</h3><div class="actions"><button type="button" data-select-categories="recommended">Select Recommended</button><button type="button" data-select-categories="all">Select All Applicable</button><button type="button" data-select-categories="clear">Clear All</button></div></div>
+        {% set categories = [
+          ("Discovery", [("recon","Recon/Fingerprinting"),("api_discovery","API Discovery"),("method_discovery","Endpoint Method Discovery"),("security_headers","Security Headers"),("error_handling","Error Handling")]),
+          ("Authentication", [("auth_testing","Login Testing"),("session_management","Session Management"),("jwt_testing","JWT/Token Security"),("password_reset_otp","Password Reset / OTP"),("rate_limiting","Rate Limiting")]),
+          ("Authorization", [("authorization_matrix","Authorization Matrix"),("bola_idor","BOLA / IDOR"),("bfla","BFLA"),("mass_assignment","Mass Assignment"),("cross_account_replay","Cross-account Replay")]),
+          ("Input Validation", [("xss","XSS"),("sqli","SQL Injection"),("ssrf","SSRF"),("path_traversal","Path Traversal"),("open_redirect","Open Redirect"),("command_injection","Command Injection"),("file_upload","File Upload if detected")]),
+          ("Business Logic", [("business_logic","Workflow Abuse"),("coupon_discount","Coupon/Discount Abuse"),("order_state","Order/State Manipulation"),("race_condition","Race Condition where applicable")]),
+          ("Network/Host", [("host_discovery","Host Discovery"),("port_scan","Port Scan"),("service_enum","Service Enumeration"),("tls_checks","TLS Checks"),("smb_checks","SMB Checks"),("snmp_checks","SNMP Checks"),("ssh_checks","SSH Checks"),("rdp_checks","RDP Checks")])
+        ] %}
+        {% for group, items in categories %}
+        <fieldset><legend>{{ group }}</legend>{% for value, label in items %}<label><input type="checkbox" name="selected_test_categories" value="{{ value }}"> {{ label }}</label>{% endfor %}</fieldset>
+        {% endfor %}
+      </div>
+      <label class="confirm"><input name="confirm" type="checkbox" required> I confirm this target is in scope and authorized for testing.</label>
+      <label class="confirm"><input name="confirm_destructive_testing" type="checkbox"> I understand destructive tests may create, modify, or delete test data.</label>
+      <button class="primary success" type="submit">Start Scan</button>
+      <p class="form-message" data-form-message></p>
+    </form>
+  </div>
+  {% if scan_id %}
+  <div class="panel">
+    <div class="panel-title"><h2>Phase Runner</h2><span class="muted">continue selected workflow phase</span></div>
+    <div class="button-stack">
+      {% for phase in ["api_discovery","auth_mapping","account_provisioning","login_session","session_validation","token_analysis","authenticated_crawling","authorization_testing","input_validation_testing","business_logic_testing","reporting"] %}
+      <button data-action="/api/scans/{{ scan_id }}/run-phase?phase={{ phase }}">Run {{ phase }}</button>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-title"><h2>Auth/Session Controls</h2><span class="muted">fresh session gates before authenticated phases</span></div>
+    <div class="button-stack">
+      <button data-action="/api/scans/{{ scan_id }}/auth/validate">Validate Auth Sessions</button>
+      <button data-action="/api/scans/{{ scan_id }}/auth/relogin">Re-login Sessions</button>
+      <button data-action="/api/scans/{{ scan_id }}/auth/create-accounts">Create Test Accounts</button>
+    </div>
+  </div>
+  {% endif %}
+  <div class="panel">
+    <div class="panel-title"><h2>Quick Presets</h2><span class="muted">common operator flows</span></div>
+    <div class="button-stack">
+      <button data-preset="default">Default Enumeration</button>
+      <button data-preset="crapi-full">crAPI Full Test</button>
+      <button data-preset="gray-box">Gray-box Authenticated API</button>
+      <button data-preset="enumeration-only">Enumeration Only</button>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-title"><h2>Existing Scan Controls</h2><span class="muted">pause, resume, stop, continue</span></div>
+    {% set scans = scans | default([], true) %}
+    {% if scans %}
+      <table><thead><tr><th>ID</th><th>Target</th><th>Status</th><th>Phase</th><th>Actions</th></tr></thead><tbody>
+      {% for scan in scans[:10] %}
+      <tr><td>#{{ scan.scan_id }}</td><td class="mono">{{ scan.target }}</td><td>{{ badge(scan.status) }}</td><td>{{ scan.current_phase or "-" }}</td><td class="actions"><a class="button mini" href="/scans/{{ scan.scan_id }}/live">Live</a><a class="button mini" href="/scans/{{ scan.scan_id }}/auth">Auth</a><button data-action="/api/scans/{{ scan.scan_id }}/pause" class="warning">Pause</button><button data-action="/api/scans/{{ scan.scan_id }}/resume" class="success">Resume</button><button data-action="/api/scans/{{ scan.scan_id }}/continue?phase=account_provisioning">Continue</button><button data-action="/api/scans/{{ scan.scan_id }}/stop" class="danger">Stop</button><button data-action="/api/scans/{{ scan.scan_id }}/stop-force" class="danger">Force Stop</button></td></tr>
+      {% endfor %}
+      </tbody></table>
+    {% else %}
+      {{ empty_state("No existing scans. Start a scan above.") }}
+    {% endif %}
+  </div>
+  <div class="panel">
+    <div class="panel-title"><h2>Report Controls</h2><span class="muted">JSON and HTML artifacts</span></div>
+    {% if scans %}
+      <div class="button-stack">
+      {% for scan in scans[:5] %}
+        <button data-action="/api/scans/{{ scan.scan_id }}/report">Generate Report for Scan #{{ scan.scan_id }}</button>
+      {% endfor %}
+      </div>
+    {% else %}
+      {{ empty_state("Reports appear after a scan has been created.") }}
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if page == "scans" %}
+<section class="panel">
+  <div class="panel-title"><h2>Scan List</h2><a class="button primary" href="/control">Start Scan</a></div>
+  {% set scans = scans | default([], true) %}
+  {% if scans %}
+    <table class="data-table"><thead><tr><th>ID</th><th>Target</th><th>Mode</th><th>Profile</th><th>Status</th><th>Current phase</th><th>Started</th><th>Last activity</th><th>Findings</th><th>Readiness</th><th>Actions</th></tr></thead><tbody>
+    {% for scan in scans %}
+      <tr><td>#{{ scan.scan_id }}</td><td class="mono">{{ scan.target }}</td><td>{{ scan.engagement_mode or "black_box" }}</td><td>{{ scan.profile }}</td><td>{{ badge(scan.status) }}</td><td>{{ scan.current_phase or "" }}</td><td>{{ scan.started_at }}</td><td>{{ scan.last_activity or "" }}</td><td>{{ scan.findings_count or scan.findings or 0 }}</td><td>{{ badge(scan.production_readiness.status if scan.production_readiness else "unknown") }}</td><td class="actions"><a class="button mini" href="/scans/{{ scan.scan_id }}">View</a><a class="button mini" href="/scans/{{ scan.scan_id }}/control">Control</a><a class="button mini" href="/scans/{{ scan.scan_id }}/live">Live</a><a class="button mini" href="/scans/{{ scan.scan_id }}/auth">Auth</a><button data-action="/api/scans/{{ scan.scan_id }}/pause" class="warning">Pause</button><button data-action="/api/scans/{{ scan.scan_id }}/resume" class="success">Resume</button><button data-action="/api/scans/{{ scan.scan_id }}/stop" class="danger">Stop</button><button data-action="/api/scans/{{ scan.scan_id }}/stop-force" class="danger">Force Stop</button><button data-action="/api/scans/{{ scan.scan_id }}/report">Report</button></td></tr>
+    {% endfor %}
+    </tbody></table>
+  {% else %}
+    {{ empty_state("No scans yet. Use Scan Control to start one.") }}
+  {% endif %}
+</section>
+{% endif %}
+
+{% if page == "scan_detail" %}
+<section class="panel">
+  {% set summary = detail.summary | default({}, true) %}
+  <div class="panel-title"><h2>Scan #{{ scan_id }}</h2><div class="actions"><a class="button" href="/scans/{{ scan_id }}/control">Control</a><a class="button" href="/scans/{{ scan_id }}/live">Live Monitor</a><a class="button" href="/scans/{{ scan_id }}/auth">Auth Sessions</a><button data-action="/api/scans/{{ scan_id }}/report">Generate Report</button></div></div>
+  <div class="tabs"><a href="#overview">Overview</a><a href="#coverage">Coverage</a><a href="#timeline">Timeline</a><a href="#findings">Findings</a><a href="#payloads">Payload Attempts</a><a href="#agents">Agent Activity</a><a href="#tools">Tool Runs</a><a href="#ai">AI Activity</a><a href="#evidence">Evidence</a><a href="#reports">Reports</a></div>
+  <div id="overview" class="detail-grid">
+    <div class="detail-item"><span>Target</span><strong class="mono">{{ detail.target or summary.target or "-" }}</strong></div>
+    <div class="detail-item"><span>Engagement Mode</span><strong>{{ summary.engagement_mode or "black_box" }}</strong></div>
+    <div class="detail-item"><span>Status</span><strong>{{ badge(summary.status) }}</strong></div>
+    <div class="detail-item"><span>Readiness</span><strong>{{ badge(detail.production_readiness.status if detail.production_readiness else "unknown") }}</strong></div>
+    <div class="detail-item"><span>Current Phase</span><strong>{{ summary.current_phase or "-" }}</strong></div>
+    <div class="detail-item"><span>Next Action</span><strong>{{ summary.next_recommended_action or "Review coverage and continue required phases" }}</strong></div>
+    <div class="detail-item"><span>Destructive Policy</span><strong>{{ summary.destructive_test_policy or summary.destructive_method_policy or "detect_only" }} {% if summary.enable_destructive_tests %}<span class="badge badge-high">LAB FULL DESTRUCTIVE TESTING ENABLED</span>{% endif %}</strong></div>
+    <div class="detail-item"><span>Test-owned Objects</span><strong>{{ "allowed" if summary.allow_test_owned_object_creation else "not allowed" }}</strong></div>
+  </div>
+  <h3 id="coverage">Coverage Matrix</h3>
+  {% set coverage = detail.coverage | default([], true) %}
+  {% if coverage %}
+    <table class="data-table"><thead><tr><th>Category</th><th>Applicable</th><th>Status</th><th>Planned</th><th>Executed</th><th>Findings</th><th>Reason</th><th>Next Action</th></tr></thead><tbody>
+    {% for row in coverage %}
+      <tr><td>{{ row.category }}</td><td>{{ row.applicable }}</td><td>{{ badge(row.status) }}</td><td>{{ row.test_cases_planned | default(0, true) }}</td><td>{{ row.test_cases_executed | default(0, true) }}</td><td>{{ row.findings | default(0, true) }}</td><td>{{ row.reason or row.not_applicable_reason or "" }}</td><td>{{ row.next_action or "" }}</td></tr>
+    {% endfor %}
+    </tbody></table>
+  {% else %}
+    {{ empty_state("Coverage matrix is not available yet.") }}
+  {% endif %}
+  <h3 id="timeline">Timeline</h3><div data-json="/api/scans/{{ scan_id }}/phases"></div>
+  <h3 id="findings">Findings</h3><div data-json="/api/scans/{{ scan_id }}/findings"></div>
+  <h3 id="payloads">Payload Attempts</h3><div data-json="/api/scans/{{ scan_id }}/payload-attempts"></div>
+  <h3 id="agents">Agent Activity</h3><div data-json="/api/scans/{{ scan_id }}/agent-jobs"></div>
+  <h3 id="tools">Tool Runs</h3><div data-json="/api/scans/{{ scan_id }}/tool-runs"></div>
+  <h3 id="ai">AI Activity</h3><div data-json="/api/scans/{{ scan_id }}/ai-calls"></div>
+  <h3 id="evidence">Evidence</h3><div data-json="/api/scans/{{ scan_id }}/evidence"></div>
+  <h3 id="reports">Reports</h3><div data-json="/api/scans/{{ scan_id }}/reports"></div>
+</section>
+{% endif %}
+
+{% if page == "live" %}
+{% set watch_data = watch | default({}, true) %}
+{% set status = watch_data.status | default(watch_data.summary | default({}, true), true) %}
+<section class="panel live-panel">
+  <div class="panel-title"><h2>Live Scan Monitor {{ "#" ~ scan_id if scan_id else "" }}</h2><div class="actions">{% if scan_id %}<button data-action="/api/scans/{{ scan_id }}/pause" class="warning">Pause</button><button data-action="/api/scans/{{ scan_id }}/resume" class="success">Resume</button><button data-action="/api/scans/{{ scan_id }}/stop" class="danger">Stop</button><button data-action="/api/scans/{{ scan_id }}/stop-force" class="danger">Force Stop</button><button data-action="/api/scans/{{ scan_id }}/continue?phase=account_provisioning">Continue Phase</button><button data-action="/api/scans/{{ scan_id }}/auth/validate">Validate Auth</button><button data-action="/api/scans/{{ scan_id }}/auth/relogin">Re-login</button>{% else %}<a class="button primary" href="/control">Start Scan</a>{% endif %}</div></div>
+  {% if scan_id %}
+    <div class="detail-grid" id="live-status">
+      <div class="detail-item"><span>Scan ID</span><strong>#{{ scan_id }}</strong></div>
+      <div class="detail-item"><span>Status</span><strong>{{ badge(status.status) }}</strong></div>
+      <div class="detail-item"><span>Current Phase</span><strong>{{ status.current_phase or "-" }}</strong></div>
+      <div class="detail-item"><span>Current Agent</span><strong>{{ status.current_agent or "-" }}</strong></div>
+      <div class="detail-item"><span>Current Tool</span><strong>{{ status.current_tool or "-" }}</strong></div>
+      <div class="detail-item"><span>Last Activity</span><strong>{{ status.last_activity or "-" }}</strong></div>
+    </div>
+    <div class="timeline">
+      {% for phase in ["precheck","ai_planning","enumeration","api_discovery","auth_mapping","account_provisioning","login_session","session_validation","token_analysis","authenticated_crawling","authorization_testing","input_validation_testing","business_logic_testing","reporting"] %}
+      <span class="timeline-step {{ 'running' if status.current_phase == phase else 'pending' }}">{{ phase }}</span>
+      {% endfor %}
+    </div>
+    <section class="grid2 live-grid">
+      <div class="panel inner"><h3>Scan Summary</h3><div id="live-summary" data-json="/api/scans/{{ scan_id }}"></div></div>
+      <div class="panel inner"><h3>Process</h3><div id="live-process" data-json="/api/scans/{{ scan_id }}/processes"></div></div>
+      <div class="panel inner"><h3>Latest Events</h3><div id="live-events" data-json="/api/scans/{{ scan_id }}/events"></div></div>
+      <div class="panel inner"><h3>Tool Runs</h3><div id="live-tools" data-json="/api/scans/{{ scan_id }}/tool-runs"></div></div>
+      <div class="panel inner"><h3>AI Calls</h3><div id="live-ai" data-json="/api/scans/{{ scan_id }}/ai-calls"></div></div>
+      <div class="panel inner"><h3>Payload Attempts</h3><div id="live-payloads" data-json="/api/scans/{{ scan_id }}/payload-attempts"></div></div>
+      <div class="panel inner"><h3>Evidence</h3><div id="live-evidence" data-json="/api/scans/{{ scan_id }}/evidence"></div></div>
+      <div class="panel inner"><h3>Runtime Log</h3><div id="live-logs" data-json="/api/scans/{{ scan_id }}/logs/tail"></div></div>
+    </section>
+  {% else %}
+    {{ empty_state("No scan selected. Open a scan from the scan list or start a new scan.") }}
+  {% endif %}
+</section>
+{% endif %}
+
+{% if page == "findings" %}
+<section class="panel">
+  <div class="panel-title"><h2>Findings</h2><input class="filter-input" data-table-filter placeholder="Filter findings..."></div>
+  {% if findings %}
+    <table class="data-table filterable"><thead><tr><th>ID</th><th>Title</th><th>Severity</th><th>Confidence</th><th>Status</th><th>Endpoint</th><th>Parameter</th><th>Agent</th><th>Test case</th><th>Created</th><th>Actions</th></tr></thead><tbody>{% for f in findings %}<tr><td><a href="/findings/{{ f.id }}">{{ f.finding_uid or f.id }}</a></td><td>{{ f.title }}</td><td>{{ badge(f.severity) }}</td><td>{{ f.confidence }}</td><td>{{ badge(f.status) }}</td><td class="mono">{{ f.affected_endpoint }}</td><td>{{ f.parameter }}</td><td>{{ f.agent_name }}</td><td>{{ f.test_case_id }}</td><td>{{ f.created_at }}</td><td class="actions"><button data-action="/api/findings/{{ f.id }}/mark-false-positive">False Positive</button><button data-action="/api/findings/{{ f.id }}/mark-accepted-risk">Accept Risk</button><button data-action="/api/findings/{{ f.id }}/retest">Retest</button><button data-action="/api/findings/{{ f.id }}/close">Close</button></td></tr>{% endfor %}</tbody></table>
+  {% else %}
+    {{ empty_state("No findings recorded yet.") }}
+  {% endif %}
+</section>
+{% endif %}
+
+{% if page == "finding_detail" %}
+<section class="panel">
+  <div class="panel-title"><h2>{{ finding.finding_uid or finding.id }} - {{ finding.title }}</h2><div class="actions"><button data-action="/api/findings/{{ finding.id }}/retest">Retest</button><button data-action="/api/findings/{{ finding.id }}/close">Close</button></div></div>
+  <div class="detail-grid">
+    <div class="detail-item"><span>Severity</span><strong>{{ badge(finding.severity) }}</strong></div>
+    <div class="detail-item"><span>Status</span><strong>{{ badge(finding.status) }}</strong></div>
+    <div class="detail-item"><span>Endpoint</span><strong class="mono">{{ finding.affected_endpoint or "-" }}</strong></div>
+    <div class="detail-item"><span>Parameter</span><strong>{{ finding.parameter or "-" }}</strong></div>
+  </div>
+  <pre class="debug-json">{{ finding | tojson(indent=2) }}</pre>
+</section>
+{% endif %}
+
+{% if page in ["auth_sessions", "payload_attempts", "agent_activity", "tool_runs", "ai_activity", "evidence", "reports"] %}
+<section class="panel">
+  <div class="panel-title"><h2>{{ page_title }}</h2>{% if page == "reports" %}<a class="button primary" href="/control">Generate Report</a>{% endif %}</div>
+  {% set items = auth_sessions if page == "auth_sessions" else payload_attempts if page == "payload_attempts" else agent_jobs if page == "agent_activity" else tool_runs if page == "tool_runs" else ai_calls if page == "ai_activity" else evidence_items if page == "evidence" else reports %}
+  {% if items %}
+    <div data-rows='{{ items | tojson }}'></div>
+  {% else %}
+    {{ empty_state("No records yet.") }}
+  {% endif %}
+</section>
+{% endif %}
+
+{% if page == "settings" %}
+<section class="panel">
+  <div class="panel-title"><h2>Settings</h2><span class="muted">local runtime configuration</span></div>
+  <div class="settings-grid">
+    <div class="detail-item"><span>Ollama Base URL</span><strong class="mono">{{ settings.ollama_base_url }}</strong></div>
+    <div class="detail-item"><span>Ollama Model</span><strong>{{ settings.ollama_model }}</strong></div>
+    <div class="detail-item"><span>Timeout</span><strong>{{ settings.ollama_timeout_seconds }}s</strong></div>
+    <div class="detail-item"><span>Secret Evidence View</span><strong>{{ badge("enabled" if settings.allow_secret_view else "disabled") }}</strong></div>
+  </div>
+  <h3>Tool Registry</h3><div data-rows='{{ settings.tool_registry | default([], true) | tojson }}'></div>
+  <h3>Payload Sources</h3><pre class="debug-json">{{ settings.payload_sources | default({}, true) | tojson(indent=2) }}</pre>
+</section>
+{% endif %}
+
+{% endblock %}

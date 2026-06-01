@@ -1,0 +1,90 @@
+categories:
+  core_http:
+    - name: curl
+      kind: external_cli
+      required: false
+    - name: http_client
+      kind: python
+      required: true
+    - name: httpx
+      kind: python
+      required: true
+    - name: jq
+      kind: external_cli
+      required: false
+  fingerprinting:
+    - name: whatweb
+      kind: external_cli
+      required: false
+    - name: nuclei-tech-templates
+      kind: planned
+      required: false
+  enumeration:
+    - name: ffuf
+      kind: external_cli
+      required: false
+    - name: feroxbuster
+      kind: external_cli
+      required: false
+    - name: katana
+      kind: external_cli
+      required: false
+  api_enumeration:
+    - name: openapi-parser
+      kind: python
+      required: false
+    - name: swagger-discovery
+      kind: python
+      required: false
+  authentication:
+    - name: login-flow-detector
+      kind: python
+      required: false
+    - name: registration-flow-detector
+      kind: python
+      required: false
+    - name: session-manager
+      kind: python
+      required: false
+    - name: csrf-extractor
+      kind: python
+      required: false
+    - name: jwt-parser
+      kind: python
+      required: false
+  authorization:
+    - name: role-manager
+      kind: python
+      required: false
+    - name: request-replayer
+      kind: python
+      required: false
+    - name: idor-bola-tester
+      kind: python
+      required: false
+    - name: bfla-tester
+      kind: python
+      required: false
+  input_validation:
+    - name: xss-checker
+      kind: planned
+      required: false
+    - name: sqli-checker
+      kind: planned
+      required: false
+    - name: ssrf-checker
+      kind: planned
+      required: false
+    - name: path-traversal-checker
+      kind: planned
+      required: false
+  reporting:
+    - name: json-report
+      kind: python
+      required: true
+    - name: markdown-report
+      kind: planned
+      required: false
+    - name: html-report
+      kind: python
+      required: true

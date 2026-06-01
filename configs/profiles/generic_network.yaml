@@ -1,0 +1,20 @@
+profile_id: generic-network
+display_name: Generic Network
+target_types:
+  - host
+  - subnet
+agents:
+  - network_recon_agent
+  - host_discovery_agent
+  - service_enum_agent
+  - tls_agent
+capabilities:
+  - subnet_host_discovery
+  - tcp_top_ports
+  - udp_selected_ports
+  - service_version_enumeration
+  - tls_certificate_cipher_checks
+  - exposure_inventory
+method_policy:
+  no_destructive_methods_default: true
+  default_credential_tests_require_explicit_allow: true

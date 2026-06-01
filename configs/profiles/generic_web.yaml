@@ -1,0 +1,49 @@
+profile_id: generic_web
+display_name: Generic Web Application
+detection_rules:
+  contains:
+    - <html
+  api_style: html_web
+api_base_candidates:
+  - /
+  - /api
+auth_endpoint_candidates:
+  - /login
+  - /signin
+  - /logout
+  - /register
+  - /signup
+  - /forgot-password
+  - /reset-password
+registration_payload_templates:
+  - username: "{{username}}"
+    email: "{{email}}"
+    password: "{{password}}"
+login_payload_templates:
+  - username: "{{username}}"
+    password: "{{password}}"
+  - email: "{{email}}"
+    password: "{{password}}"
+session_type: cookie_or_bearer
+token_locations:
+  - set-cookie
+  - html.form
+  - json.token
+common_protected_endpoints:
+  - /account
+  - /profile
+  - /user
+  - /dashboard
+object_id_fields:
+  - id
+  - uuid
+  - user_id
+supported_test_categories:
+  - authentication
+  - authorization
+  - input_validation
+  - session_management
+payload_strategy:
+  xss: reflected-parameter-comparison
+  sqli: error-and-differential-comparison
+  ssrf: callback-required

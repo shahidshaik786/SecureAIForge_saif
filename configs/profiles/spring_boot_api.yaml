@@ -1,0 +1,46 @@
+profile_id: spring_boot_api
+display_name: Spring Boot API
+detection_rules:
+  contains:
+    - whitelabel error page
+    - actuator
+    - spring
+  backend_framework: spring_boot
+api_base_candidates:
+  - /api
+  - /api/v1
+  - /api/v2
+  - /actuator
+auth_endpoint_candidates:
+  - /login
+  - /api/login
+  - /api/auth/login
+  - /oauth/token
+  - /.well-known/openid-configuration
+login_payload_templates:
+  - username: "{{username}}"
+    password: "{{password}}"
+  - email: "{{email}}"
+    password: "{{password}}"
+session_type: bearer_or_cookie
+token_locations:
+  - authorization_header
+  - set-cookie
+  - json.access_token
+common_protected_endpoints:
+  - /api/me
+  - /api/user
+  - /actuator
+object_id_fields:
+  - id
+  - uuid
+  - userId
+supported_test_categories:
+  - authentication
+  - authorization
+  - jwt
+  - misconfiguration
+  - input_validation
+payload_strategy:
+  actuator: exposure-review
+  jwt: baseline-vs-tampered

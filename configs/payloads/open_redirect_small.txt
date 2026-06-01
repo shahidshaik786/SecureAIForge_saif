@@ -1,0 +1,4 @@
+https://example.com
+//example.com
+/%5cexample.com
+https://evil.example.test

@@ -1,0 +1,117 @@
+profile: api-security
+phases:
+  - precheck
+  - enumeration
+  - api_discovery
+  - authentication
+  - authorization
+  - token_session
+  - input_validation
+  - business_logic
+  - misconfiguration
+  - reporting
+test_cases:
+  - id: api.bola
+    title: Broken Object Level Authorization
+    name: Broken Object Level Authorization
+    category: authorization
+    phase: authorization
+    agent: authorization
+    tool: authorization_matrix
+    prerequisites: ["authenticated session", "object identifiers"]
+    required_artifacts: ["discovered_objects", "authenticated_sessions"]
+    payload_category: object_replay
+    evidence_requirements: ["owner request", "alternate user request", "baseline comparison"]
+    report_template: "Compare object access across users and document authorization boundary failure."
+    enabled: true
+  - id: api.broken_authentication
+    title: Broken Authentication
+    name: Broken Authentication
+    category: authentication
+    phase: authentication
+    agent: authentication
+    tool: login_session
+    prerequisites: ["login endpoint or credentials"]
+    required_artifacts: ["discovered_auth_mechanisms"]
+    payload_category: auth
+    evidence_requirements: ["login request", "session token metadata"]
+    report_template: "Document authentication control weakness with request and response evidence."
+    enabled: true
+  - id: api.bfla
+    title: Broken Function Level Authorization
+    name: Broken Function Level Authorization
+    category: authorization
+    phase: authorization
+    agent: authorization
+    tool: idor_bola_bfla_planner
+    prerequisites: ["roles or multiple credentials"]
+    required_artifacts: ["discovered_roles", "authenticated_sessions"]
+    payload_category: function_replay
+    evidence_requirements: ["role matrix", "request replay"]
+    report_template: "Show unauthorized function access or missing role enforcement."
+    enabled: true
+  - id: api.mass_assignment
+    title: Mass Assignment
+    name: Mass Assignment
+    category: input_validation
+    phase: input_validation
+    agent: input_validation
+    tool: input_validation_planner
+    prerequisites: ["JSON API parameters"]
+    required_artifacts: ["discovered_parameters"]
+    payload_category: json_fields
+    evidence_requirements: ["baseline body", "modified body", "response comparison"]
+    report_template: "Document accepted unauthorized fields and impact."
+    enabled: true
+  - id: api.security_misconfiguration
+    title: Security Misconfiguration
+    name: Security Misconfiguration
+    category: misconfiguration
+    phase: misconfiguration
+    agent: recon
+    tool: technology_fingerprint
+    prerequisites: ["reachable target"]
+    required_artifacts: ["http_responses"]
+    payload_category: none
+    evidence_requirements: ["headers", "debug endpoint evidence"]
+    report_template: "Document exposed debug, headers, or metadata risks."
+    enabled: true
+  - id: api.jwt_session
+    title: JWT and Session Weaknesses
+    name: JWT and Session Weaknesses
+    category: token_session
+    phase: token_session
+    agent: token
+    tool: jwt_adaptive
+    prerequisites: ["JWT or bearer token"]
+    required_artifacts: ["discovered_tokens", "authenticated_sessions"]
+    payload_category: jwt
+    evidence_requirements: ["valid baseline", "missing token", "malformed token", "tampered token"]
+    report_template: "Confirm token weakness only when protected data or privileged action succeeds."
+    enabled: true
+  - id: api.sqli
+    title: Injection Testing
+    name: Injection Testing
+    category: input_validation
+    phase: input_validation
+    agent: input_validation
+    tool: sqli_adaptive
+    prerequisites: ["discovered parameters"]
+    required_artifacts: ["discovered_parameters"]
+    payload_category: sqli
+    evidence_requirements: ["baseline", "attack response", "error markers"]
+    report_template: "Document injection behavior with baseline and attack comparison."
+    enabled: true
+  - id: api.ssrf
+    title: SSRF Testing
+    name: SSRF Testing
+    category: input_validation
+    phase: input_validation
+    agent: input_validation
+    tool: ssrf_adaptive
+    prerequisites: ["URL-like parameters", "callback endpoint for confirmation"]
+    required_artifacts: ["discovered_parameters"]
+    payload_category: ssrf
+    evidence_requirements: ["callback evidence or response comparison"]
+    report_template: "Document server-side request behavior and confirmation evidence."
+    enabled: true

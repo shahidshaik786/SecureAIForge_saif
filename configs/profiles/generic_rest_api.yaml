@@ -1,0 +1,62 @@
+profile_id: generic_rest_api
+display_name: Generic REST API
+detection_rules:
+  contains:
+    - application/json
+    - openapi
+    - swagger
+  route_contains:
+    - /api
+  api_style: rest
+api_base_candidates:
+  - /api
+  - /api/v1
+  - /api/v2
+  - /v1
+  - /v2
+auth_endpoint_candidates:
+  - /api/login
+  - /api/auth/login
+  - /api/register
+  - /api/auth/register
+  - /api/token
+  - /api/auth/token
+  - /api/refresh
+registration_payload_templates:
+  - email: "{{email}}"
+    password: "{{password}}"
+login_payload_templates:
+  - email: "{{email}}"
+    password: "{{password}}"
+  - username: "{{username}}"
+    password: "{{password}}"
+session_type: bearer_or_api_key
+token_locations:
+  - json.access_token
+  - json.token
+  - authorization_header
+  - x-api-key
+common_protected_endpoints:
+  - /api/me
+  - /api/user
+  - /api/users/me
+  - /api/profile
+object_id_fields:
+  - id
+  - uuid
+  - user_id
+  - account_id
+  - tenant_id
+supported_test_categories:
+  - owasp_api_top_10
+  - authentication
+  - authorization
+  - jwt
+  - input_validation
+  - business_logic
+  - misconfiguration
+payload_strategy:
+  xss: reflected-parameter-comparison
+  sqli: error-and-differential-comparison
+  ssrf: callback-required
+  jwt: baseline-vs-tampered

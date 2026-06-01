@@ -1,0 +1,19 @@
+profile_id: network-device
+display_name: Network Device
+target_types:
+  - host
+agents:
+  - network_device_agent
+  - service_enum_agent
+  - tls_agent
+  - snmp_agent
+  - ssh_agent
+capabilities:
+  - web_console_detection
+  - tls_certificate_cipher_checks
+  - snmp_exposure_checks
+  - ssh_weak_configuration_checks
+  - default_credential_test_explicit_only
+method_policy:
+  no_destructive_methods_default: true
+  default_credential_tests_require_explicit_allow: true

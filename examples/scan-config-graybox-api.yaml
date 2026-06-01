@@ -1,0 +1,7 @@
+target: http://127.0.0.1:8888
+profile: generic-rest
+mode: gray-box
+credentials: examples/credentials.example.yaml
+allow_authenticated_testing: true
+allow_authorization_testing: true
+destructive_test_policy: test_owned_only

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page_title | default("Security AI Framework") }} - SAIF</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  {% set active_live_scan_id = latest_active_scan_id | default(none, true) %}
+  {% set live_monitor_href = "/scans/" ~ active_live_scan_id ~ "/live" if active_live_scan_id else "/live" %}
+  <aside class="sidebar" id="sidebar">
+    <div class="brand-block">
+      <div class="brand">SAIF</div>
+      <div class="brand-subtitle">Secure AI Framework</div>
+    </div>
+    <nav class="nav">
+      <a class="{{ 'active' if page == 'overview' else '' }}" href="/"><span>◇</span>Overview</a>
+      <a class="{{ 'active' if page == 'control' else '' }}" href="/control"><span>▶</span>Scan Control</a>
+      <a class="{{ 'active' if page == 'live' else '' }}" href="/live"><span>●</span>Live Monitor</a>
+      <a class="{{ 'active' if page == 'scans' or page == 'scan_detail' else '' }}" href="/scans"><span>▦</span>Scans</a>
+      <a class="{{ 'active' if page == 'findings' or page == 'finding_detail' else '' }}" href="/findings"><span>◆</span>Findings</a>
+      <a class="{{ 'active' if page == 'auth_sessions' else '' }}" href="/auth-sessions"><span>◌</span>Auth Sessions</a>
+      <a class="{{ 'active' if page == 'payload_attempts' else '' }}" href="/payload-attempts"><span>↯</span>Payload Attempts</a>
+      <a class="{{ 'active' if page == 'agent_activity' else '' }}" href="/agent-activity"><span>◎</span>Agent Activity</a>
+      <a class="{{ 'active' if page == 'tool_runs' else '' }}" href="/tool-runs"><span>⌁</span>Tool Runs</a>
+      <a class="{{ 'active' if page == 'ai_activity' else '' }}" href="/ai-activity"><span>✦</span>AI Activity</a>
+      <a class="{{ 'active' if page == 'evidence' else '' }}" href="/evidence"><span>▣</span>Evidence</a>
+      <a class="{{ 'active' if page == 'reports' else '' }}" href="/reports"><span>▤</span>Reports</a>
+      <a class="{{ 'active' if page == 'settings' else '' }}" href="/settings"><span>⚙</span>Settings</a>
+    </nav>
+  </aside>
+  <main class="shell">
+    <header class="topbar">
+      <button class="menu-button" data-toggle-sidebar aria-label="Toggle navigation">☰</button>
+      <div>
+        <h1>{{ page_title | default("Security AI Framework") }}</h1>
+        <p>{{ page_subtitle | default("Authorized testing command center for discovery, validation, evidence, reporting, and retesting.") }}</p>
+      </div>
+      <div class="top-actions">
+        <span class="status-pill ok">Dashboard online</span>
+        <span class="status-pill info">{{ ollama_model | default("Ollama configured") }}</span>
+        <a class="button primary" href="/control">New Scan</a>
+        <a class="button" href="{{ live_monitor_href }}">Live Monitor</a>
+        <a class="button" href="/reports">Reports</a>
+      </div>
+    </header>
+    <div class="auth-banner">Use only on authorized testing/staging environments. Tester is responsible for confirming scope and approval.</div>
+    {% block content %}{% endblock %}
+    <footer class="footer">SAIF local dashboard · PostgreSQL-backed command center</footer>
+  </main>
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>
