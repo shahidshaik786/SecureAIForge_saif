@@ -45,14 +45,20 @@ In development:
 - Dashboard command center for scan start, live monitoring, pause/resume/stop, phase continuation, evidence, findings, and reports.
 - AI-required scan planning with Ollama.
 - Deterministic evidence-first execution model.
-- Web/API discovery, OpenAPI discovery, auth endpoint mapping, method probing, technology fingerprinting, and crAPI profile support.
+- Web/API discovery, OpenAPI discovery, auth endpoint mapping, method probing, technology fingerprinting, and application profile detection including crAPI.
 - PostgreSQL storage for scans, events, tools, evidence, AI calls, payload attempts, findings, and reports.
 - Destructive testing policy controls.
 - Professional report structure with coverage matrix, evidence appendix, remediation, and retest sections.
 
 ## Dashboard Screenshots
 
-Screenshots are not included yet. They will be uploaded after the dashboard views stabilize. Broken placeholder images have intentionally been removed.
+Example screenshots use representative data so the dashboard/reporting flow is visible without publishing real engagement evidence.
+
+- ![Dashboard Overview](screenshots/dashboard-overview.png)
+- ![Scan Control](screenshots/scan-control.png)
+- ![Live Monitor](screenshots/live-monitor.png)
+- ![Findings](screenshots/findings.png)
+- ![Report Example](screenshots/report-example.png)
 
 ## Supported Testing Modes
 
@@ -100,7 +106,7 @@ Open:
 http://127.0.0.1:8787
 ```
 
-## Start crAPI Full Test
+## Start Full Authorized Web/API Test
 
 Use the dashboard Scan Control page, or CLI for debugging:
 
@@ -110,8 +116,12 @@ Use the dashboard Scan Control page, or CLI for debugging:
   --profile crapi \
   --mode gray-box \
   --full \
+  --destructive-policy lab_full_allowed \
+  --confirm-destructive-testing \
   --debug
 ```
+
+In this example `--profile crapi` is the application profile. The execution profile is selected separately through `--full`, `--destructive-policy`, and dashboard execution controls.
 
 ## Destructive Testing Policy
 
@@ -121,7 +131,7 @@ SAIF supports these policies:
 - `detect_only`
 - `test_owned_only`
 - `manual_confirmation`
-- `lab_full_allowed`
+- `lab_full_allowed` / **Destructive Test Cases - Full Authorized Scan**
 
 Use destructive modes only in lab, staging, or explicitly approved environments. See [docs/destructive-testing-policy.md](docs/destructive-testing-policy.md).
 

@@ -391,7 +391,7 @@ def scan_start(
         raise typer.BadParameter(str(exc)) from exc
     run_doctor(resolved.url, console=console)
     engagement_mode = _resolve_engagement_mode(mode, credentials, source_path)
-    destructive_method_policy = destructive_method_policy or ("no_destructive_methods" if no_destructive_methods else "test_owned_only" if profile == "crapi" or full else "no_destructive_methods")
+    destructive_method_policy = destructive_method_policy or ("no_destructive_methods" if no_destructive_methods else "test_owned_only" if full else "no_destructive_methods")
     if no_destructive_methods and destructive_policy == "detect_only":
         destructive_policy = "disabled"
     if credentials:
@@ -506,7 +506,7 @@ def scan_run_existing(
                 target,
                 scan.profile or "auto",
                 bool(dashboard_options.get("enumeration_only")),
-                bool(dashboard_options.get("full") or scan.profile == "crapi" or scan.profile == "crapi-full-test"),
+                bool(dashboard_options.get("full") or scan.profile == "api-security-authenticated-test"),
                 bool(scan.allow_authenticated_testing),
                 bool(scan.allow_payload_testing),
                 (scan.destructive_test_policy or "") == "disabled",
@@ -639,8 +639,10 @@ def _scan_start_prompt(
     engagement_mode: str | None = None,
 ) -> str:
     parts = ["default enumeration"]
-    if profile == "crapi" or full:
-        parts.append("SAIF:full crAPI full test")
+    if full:
+        parts.append("SAIF:full Destructive Test Cases - Full Authorized Scan")
+    if profile == "crapi":
+        parts.append("SAIF:application_profile=crapi")
     elif auth:
         parts.append("SAIF:auth authenticated API security testing")
     elif vuln_test:

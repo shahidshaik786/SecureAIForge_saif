@@ -85,16 +85,16 @@
   <div class="panel-title"><h2>Start New Scan</h2><span class="muted">AI-required planning and execution</span></div>
     <form data-start-scan>
       <label>Target URL<input name="target" type="url" placeholder="http://172.18.144.1:8888" required></label>
-      <label>Profile<select name="profile"><option value="auto">auto</option><option value="crapi">crapi</option><option value="generic-rest">generic-rest</option><option value="web-api">web-api</option></select></label>
+      <label>Application Profile<select name="profile"><option value="auto">auto-detect</option><option value="crapi">crAPI application profile</option><option value="generic-rest">generic REST API</option><option value="web-api">web/API generic</option></select></label>
       <label>Engagement Mode<select name="mode"><option value="black-box">black-box</option><option value="gray-box">gray-box</option><option value="white-box">white-box</option></select></label>
       <label>Auth Mode<select name="auth_mode"><option value="auto">auto</option><option value="username_password">username_password</option><option value="bearer_token">bearer_token</option><option value="api_key">api_key</option><option value="cookie_session">cookie_session</option><option value="manual_session_import">manual_session_import</option><option value="sso_manual_assisted">sso_manual_assisted</option></select></label>
       <label>Destructive Method Policy<select name="destructive_method_policy"><option value="no_destructive_methods">Do not execute destructive methods</option><option value="detect_only">Detect destructive methods only</option><option value="test_owned_only" selected>Execute only on test-owned resources</option><option value="manual_confirmation">Require manual confirmation before destructive action</option></select></label>
-      <label>Destructive Test Policy<select name="destructive_test_policy"><option value="disabled">disabled</option><option value="detect_only" selected>detect_only</option><option value="test_owned_only">test_owned_only</option><option value="manual_confirmation">manual_confirmation</option><option value="lab_full_allowed">lab_full_allowed</option></select></label>
+      <label>Execution Profile<select name="destructive_test_policy"><option value="disabled">No Destructive Test Cases</option><option value="detect_only" selected>Discovery / Detect Only</option><option value="test_owned_only">Test-Owned Object Validation</option><option value="manual_confirmation">Manual Confirmation Required</option><option value="lab_full_allowed">Destructive Test Cases - Full Authorized Scan</option></select></label>
       <div class="warning-box" data-destructive-warning>Destructive test cases can create, modify, or delete test data. Use this only for approved lab/testing environments and test-owned resources.</div>
       <label>Credentials file path<input name="credentials_path" placeholder="configs/credentials.yaml"></label>
       <label data-source-path>Source path<input name="source_path" placeholder="/path/to/source"></label>
       <div class="check-row"><label><input name="full" type="checkbox"> Full workflow</label><label><input name="enumeration_only" type="checkbox"> Enumeration only</label><label><input name="debug" type="checkbox" checked> Debug live output</label></div>
-      <div class="check-row"><label><input name="allow_account_generation" type="checkbox"> Allow SAIF to create test accounts if registration is available</label><label><input name="allow_authenticated_testing" type="checkbox"> Allow authenticated testing</label><label><input name="allow_authorization_testing" type="checkbox"> Allow authorization testing</label><label><input name="allow_payload_testing" type="checkbox"> Allow payload testing</label><label><input name="allow_rate_limit_testing" type="checkbox"> Allow rate-limit / OTP testing</label><label><input name="enable_destructive_tests" type="checkbox"> Enable destructive test cases</label><label><input name="allow_test_owned_object_creation" type="checkbox"> Allow test-owned object creation</label></div>
+      <div class="check-row"><label><input name="allow_account_generation" type="checkbox"> Allow SAIF to create test accounts if registration is available</label><label><input name="allow_authenticated_testing" type="checkbox"> Allow authenticated testing</label><label><input name="allow_authorization_testing" type="checkbox"> Allow authorization testing</label><label><input name="allow_payload_testing" type="checkbox"> Allow payload testing</label><label><input name="allow_rate_limit_testing" type="checkbox"> Allow rate-limit / OTP testing</label><label><input name="enable_destructive_tests" type="checkbox"> Enable Destructive Test Cases - Full Authorized Scan</label><label><input name="allow_test_owned_object_creation" type="checkbox"> Allow test-owned object creation</label></div>
       <div class="test-category-box">
         <div class="panel-title"><h3>Test Case Selection</h3><div class="actions"><button type="button" data-select-categories="recommended">Select Recommended</button><button type="button" data-select-categories="all">Select All Applicable</button><button type="button" data-select-categories="clear">Clear All</button></div></div>
         {% set categories = [
@@ -137,8 +137,9 @@
     <div class="panel-title"><h2>Quick Presets</h2><span class="muted">common operator flows</span></div>
     <div class="button-stack">
       <button data-preset="default">Default Enumeration</button>
-      <button data-preset="crapi-full">crAPI Full Test</button>
+      <button data-preset="crapi-app">crAPI Application Profile</button>
       <button data-preset="gray-box">Gray-box Authenticated API</button>
+      <button data-preset="full-authorized">Destructive Test Cases - Full Authorized Scan</button>
       <button data-preset="enumeration-only">Enumeration Only</button>
     </div>
   </div>

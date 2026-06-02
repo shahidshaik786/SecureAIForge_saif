@@ -147,7 +147,7 @@ def _authz_context(session: Session, scan_id: int, scan: Scan) -> bool:
 def _can_create_accounts(session: Session, scan: Scan) -> bool:
     if not scan.allow_account_generation:
         return False
-    if scan.profile in {"crapi", "crapi-full-test"}:
+    if scan.profile in {"crapi", "api-security-authenticated-test"}:
         return True
     flows = session.scalar(select(func.count(DiscoveredAuthFlow.id)).where(DiscoveredAuthFlow.scan_id == scan.id, DiscoveredAuthFlow.flow_type.ilike("%registration%"))) or 0
     return bool(flows)

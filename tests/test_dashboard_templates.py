@@ -130,6 +130,14 @@ class DashboardTemplateTests(unittest.TestCase):
         self.assertIn("Start New Scan", client.get("/control").text)
         self.assertIn("Live Scan Monitor", client.get("/live", follow_redirects=False).text)
 
+    def test_control_page_separates_application_and_execution_profiles(self) -> None:
+        response = TestClient(dashboard_app.create_app()).get("/control")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Application Profile", response.text)
+        self.assertIn("Execution Profile", response.text)
+        self.assertIn("Destructive Test Cases - Full Authorized Scan", response.text)
+        self.assertNotIn("crAPI Full Test", response.text)
+
     def test_live_latest_prefers_latest_running_scan(self) -> None:
         dashboard_app.services.scans = lambda session: [
             {"scan_id": 15, "status": "stopped"},

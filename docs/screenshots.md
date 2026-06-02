@@ -1,5 +1,5 @@
 # Screenshots
 
-Screenshots are not included yet.
+The `screenshots/` directory contains generated example dashboard screenshots with representative data.
 
-Earlier placeholder `.png` files were removed because they were not real image files and did not render on GitHub. Real dashboard screenshots will be uploaded after the interface stabilizes.
+These images are illustrative only. They do not contain real engagement evidence, credentials, secrets, or customer data.

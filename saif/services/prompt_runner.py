@@ -520,16 +520,16 @@ def run_prompt_scan(
                     for added_tool in added_tools:
                         if added_tool not in planned_cases:
                             planned_cases.update(_create_planned_test_cases(session, scan, [added_tool], target_url))
-                    scan.profile = "crapi-full-test" if _latest_application_profile(session, scan.id).get("lab_profile") == "crapi" else "api-security-authenticated-test"
+                    scan.profile = "api-security-authenticated-test"
                     ai_context.scan_plan["mode"] = scan.profile
                     ai_context.scan_plan["tools"] = selected_tools
                     session.add(
                         Log(
                             scan_id=scan.id,
                             level="info",
-                            message="Scan mode escalated",
+                            message="Execution profile escalated",
                             context={
-                                "mode": scan.profile,
+                                "execution_profile": scan.profile,
                                 "added_tools": added_tools,
                                 "reason": "Application profile and auth endpoints support authenticated API security workflow.",
                                 "selected_tools": selected_tools,
@@ -537,7 +537,7 @@ def run_prompt_scan(
                         )
                     )
                     if console:
-                        console.print(f"Scan mode escalated: {scan.profile}")
+                        console.print(f"Execution profile escalated: {scan.profile}")
                         console.print(f"Added tools: {', '.join(added_tools)}")
             except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.HTTPStatusError, ValueError, OSError, subprocess.SubprocessError) as exc:
                 result = _record_tool(
@@ -1332,8 +1332,8 @@ def _maybe_escalate_after_profile_probe(
         _artifact(
             session,
             scan,
-            "scan_mode_recommendation",
-            "next_full_api_security_workflow",
+            "execution_profile_recommendation",
+            "next_full_authorized_api_security_workflow",
             {
                 "recommended_command": next_command,
                 "reason": "Application profile and auth endpoints support authenticated API security workflow.",
@@ -1355,11 +1355,11 @@ def _maybe_escalate_after_profile_probe(
         _artifact(
             session,
             scan,
-            "scan_mode_escalation",
-            "auto_profile_escalation",
+            "execution_profile_escalation",
+            "auto_execution_profile_escalation",
             {
                 "from_mode": scan.profile,
-                "to_mode": "crapi-full-test" if crapi_detected else "api-security-authenticated-test",
+                "to_mode": "api-security-authenticated-test",
                 "profile": profile,
                 "auth_testing_status": auth,
                 "added_tools": added,
@@ -1390,7 +1390,7 @@ def _latest_application_profile(session: Session, scan_id: int) -> dict:
 
 def _mode_from_prompt(parsed: dict) -> str:
     if parsed.get("crapi_full_test") or parsed.get("full_scan"):
-        return "crapi-full-test"
+        return "full-authorized-api-security-test"
     if parsed.get("strong_api_discovery"):
         return "strong-crapi-api-discovery"
     if parsed.get("default_enumeration"):
