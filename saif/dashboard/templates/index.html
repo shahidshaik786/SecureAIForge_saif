@@ -85,13 +85,13 @@
   <div class="panel-title"><h2>Start New Scan</h2><span class="muted">AI-required planning and execution</span></div>
     <form data-start-scan>
       <label>Target URL<input name="target" type="url" placeholder="http://172.18.144.1:8888" required></label>
-      <label>Application Profile<select name="profile"><option value="auto">auto-detect</option><option value="crapi">crAPI application profile</option><option value="generic-rest">generic REST API</option><option value="web-api">web/API generic</option></select></label>
+      <label>Application Profile<span class="form-help">Select the target application type so SAIF can apply app-specific discovery, auth, and business-logic hints. This does not decide how aggressive the scan is.</span><select name="profile"><option value="auto">Auto-detect</option><option value="web-api">Generic Web/API</option><option value="crapi">crAPI application profile</option><option value="juice-shop">OWASP Juice Shop application profile</option><option value="dvwa">DVWA application profile</option><option value="custom">Custom application profile</option></select></label>
       <label>Engagement Mode<select name="mode"><option value="black-box">black-box</option><option value="gray-box">gray-box</option><option value="white-box">white-box</option></select></label>
       <label>Auth Mode<select name="auth_mode"><option value="auto">auto</option><option value="username_password">username_password</option><option value="bearer_token">bearer_token</option><option value="api_key">api_key</option><option value="cookie_session">cookie_session</option><option value="manual_session_import">manual_session_import</option><option value="sso_manual_assisted">sso_manual_assisted</option></select></label>
       <label>Destructive Method Policy<select name="destructive_method_policy"><option value="no_destructive_methods">Do not execute destructive methods</option><option value="detect_only">Detect destructive methods only</option><option value="test_owned_only" selected>Execute only on test-owned resources</option><option value="manual_confirmation">Require manual confirmation before destructive action</option><option value="lab_full_allowed">Lab full allowed</option></select></label>
-      <label>Execution Profile<select name="destructive_test_policy"><option value="disabled">No Destructive Test Cases</option><option value="detect_only" selected>Discovery / Detect Only</option><option value="test_owned_only">Test-Owned Object Validation</option><option value="manual_confirmation">Manual Confirmation Required</option><option value="lab_full_allowed">Destructive Test Cases - Full Authorized Scan</option></select></label>
+      <label>Execution Profile<span class="form-help">Select how deep SAIF should test. This controls whether authenticated, payload, authorization, rate-limit, and destructive/state-changing test cases run.</span><select name="destructive_test_policy"><option value="detect_only" data-description="Discovery only. No authenticated, payload, or destructive testing.">Safe Enumeration</option><option value="standard_non_destructive" data-description="Runs applicable non-destructive Web/API security tests.">Standard Non-Destructive Scan</option><option value="authenticated_full" data-description="Runs authenticated and authorization tests without destructive actions.">Authenticated Full Scan</option><option value="lab_full_allowed" data-description="Runs all applicable tests including state-changing/destructive test cases. Works for crAPI, Juice Shop, DVWA, generic Web/API, staging APIs, and any explicitly approved test environment.">Destructive Test Cases - Full Authorized Scan</option></select><span class="form-help" data-execution-description>Discovery only. No authenticated, payload, or destructive testing.</span></label>
       <input name="execution_profile" type="hidden" value="discovery_only">
-      <div class="warning-box" data-destructive-warning>Destructive test cases can create, modify, or delete test data. Use this only for approved lab/testing environments and test-owned resources.</div>
+      <div class="warning-box strong-warning" data-destructive-warning hidden>This execution profile is target-agnostic. It can run against any selected application profile. It may create, modify, replay, or delete test data depending on policy. Use only for authorized lab, staging, or explicitly approved targets.</div>
       <label>Credentials file path<input name="credentials_path" placeholder="configs/credentials.yaml"></label>
       <label data-source-path>Source path<input name="source_path" placeholder="/path/to/source"></label>
       <div class="check-row"><label><input name="full" type="checkbox"> Full workflow</label><label><input name="enumeration_only" type="checkbox"> Enumeration only</label><label><input name="debug" type="checkbox" checked> Debug live output</label></div>
@@ -115,18 +115,22 @@
       <div class="effective-config" data-effective-config>
         <div class="panel-title"><h3>Effective Scan Configuration</h3><span class="muted">submitted with Start Scan</span></div>
         <div class="settings-grid">
-          <div class="detail-item"><span>Execution Profile</span><strong data-effective="execution_profile">Discovery / Detect Only</strong></div>
+          <div class="detail-item"><span>Execution Profile</span><strong data-effective="execution_profile">Safe Enumeration</strong></div>
+          <div class="detail-item"><span>Target URL</span><strong data-effective="target_url">-</strong></div>
           <div class="detail-item"><span>Application Profile</span><strong data-effective="application_profile">auto-detect</strong></div>
           <div class="detail-item"><span>Engagement Mode</span><strong data-effective="engagement_mode">black-box</strong></div>
+          <div class="detail-item"><span>Auth Mode</span><strong data-effective="auth_mode">auto</strong></div>
           <div class="detail-item"><span>Destructive Policy</span><strong data-effective="destructive_policy">Execute only on test-owned resources</strong></div>
           <div class="detail-item"><span>Full Workflow</span><strong data-effective="full_workflow">false</strong></div>
           <div class="detail-item"><span>Select all applicable</span><strong data-effective="select_all_applicable">false</strong></div>
           <div class="detail-item"><span>Selected test categories count</span><strong data-effective="selected_test_categories_count">0</strong></div>
-          <div class="detail-item"><span>Authenticated testing</span><strong data-effective="allow_authenticated_testing">false</strong></div>
-          <div class="detail-item"><span>Authorization testing</span><strong data-effective="allow_authorization_testing">false</strong></div>
-          <div class="detail-item"><span>Payload testing</span><strong data-effective="allow_payload_testing">false</strong></div>
-          <div class="detail-item"><span>Rate limit testing</span><strong data-effective="allow_rate_limit_testing">false</strong></div>
-          <div class="detail-item"><span>Destructive testing</span><strong data-effective="enable_destructive_tests">false</strong></div>
+          <div class="detail-item"><span>Auth Testing Enabled</span><strong data-effective="allow_authenticated_testing">false</strong></div>
+          <div class="detail-item"><span>Authorization Testing Enabled</span><strong data-effective="allow_authorization_testing">false</strong></div>
+          <div class="detail-item"><span>Payload Testing Enabled</span><strong data-effective="allow_payload_testing">false</strong></div>
+          <div class="detail-item"><span>Rate Limit Testing Enabled</span><strong data-effective="allow_rate_limit_testing">false</strong></div>
+          <div class="detail-item"><span>Destructive Testing Enabled</span><strong data-effective="enable_destructive_tests">false</strong></div>
+          <div class="detail-item"><span>Account Generation Enabled</span><strong data-effective="allow_account_generation">false</strong></div>
+          <div class="detail-item"><span>Test-Owned Object Creation Enabled</span><strong data-effective="allow_test_owned_object_creation">false</strong></div>
         </div>
       </div>
       <button class="primary success" type="submit">Start Scan</button>

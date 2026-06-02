@@ -119,6 +119,7 @@ h2, h3 { margin: 0 0 12px; }
 .panel-title h2, .panel-title h3 { margin: 0; }
 .muted { color: var(--muted); }
 .warning-box { border: 1px solid rgba(245, 158, 11, .45); background: rgba(245, 158, 11, .1); color: #fde68a; border-radius: 8px; padding: 10px 12px; margin: 6px 0 12px; }
+.warning-box.strong-warning { border-color: rgba(239, 68, 68, .58); background: rgba(127, 29, 29, .32); color: #fee2e2; font-weight: 700; }
 .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
 
 .command-strip, .actions, .button-stack { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -197,6 +198,7 @@ tbody tr:hover { background: rgba(56, 189, 248, .06); }
 
 form { display: grid; gap: 12px; }
 label { display: grid; gap: 6px; color: #cbd5e1; font-size: 13px; }
+.form-help { color: var(--muted); font-size: 12px; line-height: 1.45; }
 input, select {
   width: 100%;
   border: 1px solid var(--border);

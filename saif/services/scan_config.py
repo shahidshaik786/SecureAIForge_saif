@@ -36,4 +36,9 @@ def normalize_scan_config(config: dict) -> dict:
         raise ValueError(INVALID_DISCOVERY_ONLY_MESSAGE)
     if str(normalized.get("destructive_test_policy") or "") == "lab_full_allowed" and normalized["execution_profile"] != "destructive-full-scan":
         raise ValueError(INVALID_DISCOVERY_ONLY_MESSAGE)
+    if normalized["execution_profile"] == "discovery_only":
+        normalized["enumeration_only"] = True
+        normalized["full"] = False
+        for flag in NON_DISCOVERY_FLAGS:
+            normalized[flag] = False
     return normalized

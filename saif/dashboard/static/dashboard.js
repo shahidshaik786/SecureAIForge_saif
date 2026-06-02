@@ -124,13 +124,17 @@ document.querySelectorAll('[data-start-scan]').forEach(form => {
   const submit = form.querySelector('button[type="submit"]');
   const message = form.querySelector('[data-form-message]');
   const updateStartState = () => {
+    syncExecutionProfileFlags(form);
     syncExecutionProfile(form);
+    syncExecutionDescription(form);
     updateEffectiveConfig(form);
     const data = new FormData(form);
     let reason = '';
+    const isDestructiveFull = data.get('destructive_test_policy') === 'lab_full_allowed';
     if (!data.get('target')) reason = 'Target URL is required.';
     else if (!data.get('confirm')) reason = 'Authorization confirmation is required before starting a scan.';
-    else if (data.get('enable_destructive_tests') && !data.get('confirm_destructive_testing')) reason = 'Confirm destructive testing acknowledgement before enabling destructive test cases.';
+    else if (isDestructiveFull && !['lab_full_allowed', 'test_owned_only', 'manual_confirmation'].includes(String(data.get('destructive_method_policy') || ''))) reason = 'Select an allowed destructive policy for Destructive Test Cases - Full Authorized Scan.';
+    else if (isDestructiveFull && !data.get('confirm_destructive_testing')) reason = 'Confirm destructive testing acknowledgement before enabling destructive test cases.';
     if (submit) {
       submit.disabled = Boolean(reason);
       submit.title = reason;
@@ -173,7 +177,7 @@ document.querySelectorAll('[data-start-scan]').forEach(form => {
       confirm_destructive_testing: Boolean(data.get('confirm_destructive_testing')),
       selected_test_categories: data.getAll('selected_test_categories'),
     };
-    if (payload.enable_destructive_tests && !payload.confirm_destructive_testing) {
+    if (payload.destructive_test_policy === 'lab_full_allowed' && !payload.confirm_destructive_testing) {
       message.textContent = 'Confirm destructive testing acknowledgement before enabling destructive test cases.';
       return;
     }
@@ -207,7 +211,7 @@ document.querySelectorAll('[data-preset]').forEach(button => {
     form.elements.full.checked = preset === 'full-authorized' || preset === 'gray-box';
     form.elements.enumeration_only.checked = preset === 'enumeration-only';
     form.elements.destructive_method_policy.value = isFullAuthorized ? 'lab_full_allowed' : (preset === 'default' || preset === 'enumeration-only' ? 'detect_only' : 'test_owned_only');
-    form.elements.destructive_test_policy.value = isFullAuthorized ? 'lab_full_allowed' : (preset === 'gray-box' ? 'test_owned_only' : 'detect_only');
+    form.elements.destructive_test_policy.value = isFullAuthorized ? 'lab_full_allowed' : (preset === 'gray-box' ? 'authenticated_full' : 'detect_only');
     form.elements.enable_destructive_tests.checked = isFullAuthorized;
     form.elements.allow_test_owned_object_creation.checked = isFullAuthorized;
     form.elements.confirm_destructive_testing.checked = false;
@@ -259,9 +263,11 @@ function updateEffectiveConfig(form) {
     const node = root.querySelector(`[data-effective="${key}"]`);
     if (node) node.textContent = value;
   };
+  set('target_url', form.elements.target?.value || '-');
   set('execution_profile', selectLabel(form.elements.destructive_test_policy));
   set('application_profile', selectLabel(form.elements.profile));
   set('engagement_mode', form.elements.mode?.value || 'black-box');
+  set('auth_mode', form.elements.auth_mode?.value || 'auto');
   set('destructive_policy', selectLabel(form.elements.destructive_method_policy));
   set('full_workflow', boolText(form.elements.full?.checked));
   set('select_all_applicable', boolText(totalCount > 0 && selectedCount === totalCount));
@@ -271,6 +277,8 @@ function updateEffectiveConfig(form) {
   set('allow_payload_testing', boolText(form.elements.allow_payload_testing?.checked));
   set('allow_rate_limit_testing', boolText(form.elements.allow_rate_limit_testing?.checked));
   set('enable_destructive_tests', boolText(form.elements.enable_destructive_tests?.checked));
+  set('allow_account_generation', boolText(form.elements.allow_account_generation?.checked));
+  set('allow_test_owned_object_creation', boolText(form.elements.allow_test_owned_object_creation?.checked));
 }
 
 function syncExecutionProfile(form) {
@@ -279,6 +287,10 @@ function syncExecutionProfile(form) {
   const destructivePolicy = form.elements.destructive_test_policy?.value || '';
   if (destructivePolicy === 'lab_full_allowed' || form.elements.enable_destructive_tests?.checked) {
     hidden.value = 'destructive-full-scan';
+  } else if (destructivePolicy === 'authenticated_full') {
+    hidden.value = 'authenticated-full-scan';
+  } else if (destructivePolicy === 'standard_non_destructive') {
+    hidden.value = 'standard-non-destructive-scan';
   } else if (
     form.elements.full?.checked ||
     form.elements.allow_authenticated_testing?.checked ||
@@ -290,6 +302,69 @@ function syncExecutionProfile(form) {
   } else {
     hidden.value = 'discovery_only';
   }
+}
+
+function syncExecutionProfileFlags(form) {
+  const profile = form.elements.destructive_test_policy?.value || 'detect_only';
+  const warning = form.querySelector('[data-destructive-warning]');
+  const isSafeEnumeration = profile === 'detect_only';
+  const isStandard = profile === 'standard_non_destructive';
+  const isAuthenticated = profile === 'authenticated_full';
+  const isDestructive = profile === 'lab_full_allowed';
+  if (isSafeEnumeration) {
+    form.elements.full.checked = false;
+    form.elements.enumeration_only.checked = true;
+    form.elements.allow_account_generation.checked = false;
+    form.elements.allow_authenticated_testing.checked = false;
+    form.elements.allow_authorization_testing.checked = false;
+    form.elements.allow_payload_testing.checked = false;
+    form.elements.allow_rate_limit_testing.checked = false;
+    form.elements.enable_destructive_tests.checked = false;
+    form.elements.allow_test_owned_object_creation.checked = false;
+    if (['lab_full_allowed', 'manual_confirmation'].includes(form.elements.destructive_method_policy.value)) form.elements.destructive_method_policy.value = 'detect_only';
+  } else if (isStandard) {
+    form.elements.full.checked = true;
+    form.elements.enumeration_only.checked = false;
+    form.elements.allow_account_generation.checked = false;
+    form.elements.allow_authenticated_testing.checked = false;
+    form.elements.allow_authorization_testing.checked = false;
+    form.elements.allow_payload_testing.checked = true;
+    form.elements.allow_rate_limit_testing.checked = false;
+    form.elements.enable_destructive_tests.checked = false;
+    form.elements.allow_test_owned_object_creation.checked = false;
+    if (form.elements.destructive_method_policy.value === 'lab_full_allowed') form.elements.destructive_method_policy.value = 'test_owned_only';
+  } else if (isAuthenticated) {
+    form.elements.full.checked = true;
+    form.elements.enumeration_only.checked = false;
+    form.elements.allow_account_generation.checked = false;
+    form.elements.allow_authenticated_testing.checked = true;
+    form.elements.allow_authorization_testing.checked = true;
+    form.elements.allow_payload_testing.checked = true;
+    form.elements.allow_rate_limit_testing.checked = true;
+    form.elements.enable_destructive_tests.checked = false;
+    form.elements.allow_test_owned_object_creation.checked = true;
+    if (form.elements.destructive_method_policy.value === 'lab_full_allowed') form.elements.destructive_method_policy.value = 'test_owned_only';
+  } else if (isDestructive) {
+    form.elements.full.checked = true;
+    form.elements.enumeration_only.checked = false;
+    form.elements.allow_account_generation.checked = true;
+    form.elements.allow_authenticated_testing.checked = true;
+    form.elements.allow_authorization_testing.checked = true;
+    form.elements.allow_payload_testing.checked = true;
+    form.elements.allow_rate_limit_testing.checked = true;
+    form.elements.enable_destructive_tests.checked = true;
+    form.elements.allow_test_owned_object_creation.checked = true;
+    if (!['lab_full_allowed', 'test_owned_only', 'manual_confirmation'].includes(form.elements.destructive_method_policy.value)) {
+      form.elements.destructive_method_policy.value = 'lab_full_allowed';
+    }
+  }
+  if (warning) warning.hidden = !isDestructive;
+}
+
+function syncExecutionDescription(form) {
+  const node = form.querySelector('[data-execution-description]');
+  const option = form.elements.destructive_test_policy?.selectedOptions?.[0];
+  if (node && option) node.textContent = option.dataset.description || '';
 }
 
 function boolText(value) {

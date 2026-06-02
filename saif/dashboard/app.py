@@ -483,12 +483,23 @@ def add_api_routes(app: FastAPI) -> None:
             return api_response({"ok": False, "error": "Authorization confirmation is required before starting a scan."}, status_code=400)
         if payload.get("enable_destructive_tests") and not payload.get("confirm_destructive_testing"):
             return api_response({"ok": False, "error": "Destructive testing acknowledgement is required before enabling destructive tests."}, status_code=400)
+        destructive_test_policy = payload.get("destructive_test_policy") or payload.get("destructive_policy") or "detect_only"
+        destructive_method_policy = payload.get("destructive_method_policy") or "no_destructive_methods"
+        if destructive_test_policy == "lab_full_allowed" and destructive_method_policy not in {"lab_full_allowed", "test_owned_only", "manual_confirmation"}:
+            return api_response(
+                {
+                    "ok": False,
+                    "status": "invalid_scan_config",
+                    "message": "Invalid scan configuration: Destructive Test Cases - Full Authorized Scan requires destructive policy lab_full_allowed, test_owned_only, or manual_confirmation.",
+                },
+                status_code=400,
+            )
         try:
             normalize_scan_config(
                 {
                     **payload,
                     "engagement_mode": payload.get("engagement_mode") or payload.get("mode") or "black-box",
-                    "destructive_test_policy": payload.get("destructive_test_policy") or payload.get("destructive_policy") or "detect_only",
+                    "destructive_test_policy": destructive_test_policy,
                 }
             )
         except ValueError as exc:

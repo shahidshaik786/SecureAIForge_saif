@@ -186,6 +186,7 @@ class DashboardApiTests(unittest.TestCase):
                 "profile": "auto",
                 "engagement_mode": "gray-box",
                 "execution_profile": "discovery_only",
+                "destructive_method_policy": "lab_full_allowed",
                 "destructive_test_policy": "lab_full_allowed",
                 "full": True,
                 "allow_authenticated_testing": True,
@@ -200,6 +201,30 @@ class DashboardApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["status"], "invalid_scan_config")
         self.assertIn("discovery_only cannot be used", response.json()["message"])
+
+    def test_scan_start_rejects_destructive_full_with_detect_only_method_policy(self) -> None:
+        response = self.client.post(
+            "/api/scans/start",
+            json={
+                "target": "http://example.test",
+                "profile": "web-api",
+                "engagement_mode": "gray-box",
+                "execution_profile": "destructive-full-scan",
+                "destructive_method_policy": "detect_only",
+                "destructive_test_policy": "lab_full_allowed",
+                "full": True,
+                "allow_authenticated_testing": True,
+                "allow_authorization_testing": True,
+                "allow_payload_testing": True,
+                "allow_rate_limit_testing": True,
+                "enable_destructive_tests": True,
+                "confirm_authorized": True,
+                "confirm_destructive_testing": True,
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["status"], "invalid_scan_config")
+        self.assertIn("requires destructive policy", response.json()["message"])
 
     def test_scan_start_requires_authorization_confirmation(self) -> None:
         response = self.client.post("/api/scans/start", json={"target": "http://example.test", "profile": "auto", "mode": "black-box"})
