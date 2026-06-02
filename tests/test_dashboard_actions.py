@@ -59,7 +59,7 @@ class DashboardActionStateTests(unittest.TestCase):
                 dashboard_actions._can_create_accounts,
             ) = original_helpers
 
-    def test_stale_worker_with_tracked_process_cannot_resume_again(self) -> None:
+    def test_stale_worker_with_tracked_process_can_resume(self) -> None:
         original_status_snapshot = dashboard_actions.status_snapshot
         original_helpers = (
             dashboard_actions._active_process,
@@ -78,8 +78,8 @@ class DashboardActionStateTests(unittest.TestCase):
             dashboard_actions._authz_context = lambda session, scan_id, scan: False
             dashboard_actions._can_create_accounts = lambda session, scan: False
             states = scan_actions(object(), SimpleNamespace(id=17, status="created", enable_destructive_tests=False))
-            self.assertFalse(states["resume"]["enabled"])
-            self.assertTrue(states["force_stop"]["enabled"])
+            self.assertTrue(states["resume"]["enabled"])
+            self.assertFalse(states["force_stop"]["enabled"])
         finally:
             dashboard_actions.status_snapshot = original_status_snapshot
             (

@@ -38,7 +38,7 @@ CONTINUABLE = {"stopped", "paused", "ready", "completed", "worker_stale", "runni
 
 def scan_actions(session: Session, scan: Scan) -> dict[str, dict]:
     status = _effective_status(session, scan)
-    active_process = _active_process(session, scan.id)
+    active_process = _active_process(session, scan.id) if status in RUNNING | STARTING else None
     resumable = status in RESUMABLE and not active_process
     reportable = _has_reportable_data(session, scan.id)
     auth_context = _has_auth_context(session, scan.id, scan)
