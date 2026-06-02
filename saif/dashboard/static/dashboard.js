@@ -16,6 +16,7 @@ function inferScanAction(url) {
   if (url.includes('/stop-force')) return 'force_stop';
   if (url.includes('/stop')) return 'stop';
   if (url.includes('/continue') || url.includes('/run-phase')) return 'continue_phase';
+  if (url.includes('/resolve-prerequisites')) return 'resolve_prerequisites';
   if (url.includes('/report')) return 'generate_report';
   if (url.includes('/auth/validate')) return 'validate_auth';
   if (url.includes('/auth/relogin')) return 'relogin';
@@ -80,6 +81,11 @@ function formatValue(value) {
     return `<span class="badge badge-${escapeHtml(text.toLowerCase().replaceAll('_', '-'))}">${escapeHtml(text)}</span>`;
   }
   return escapeHtml(text.slice(0, 500));
+}
+
+function badgeHtml(value) {
+  const text = value || '-';
+  return `<span class="badge badge-${escapeHtml(String(text).toLowerCase().replaceAll('_', '-'))}">${escapeHtml(text)}</span>`;
 }
 
 function escapeHtml(text) {
@@ -379,12 +385,60 @@ const livePanel = document.querySelector('.live-panel');
 if (livePanel && location.pathname.includes('/live')) {
   const scanId = location.pathname.startsWith('/scans/') ? location.pathname.split('/')[2] : document.querySelector('[data-json^="/api/scans/"]')?.dataset.json.split('/')[3];
   if (scanId) {
-    setInterval(async () => {
-      for (const container of document.querySelectorAll('.live-panel [data-json]')) {
-        const response = await fetch(container.dataset.json);
-        const data = await response.json();
-        renderTable(container, Array.isArray(data) ? data : [data]);
+    const updateLive = async () => {
+      const disconnected = document.getElementById('live-disconnect');
+      const stale = document.getElementById('live-stale');
+      try {
+        const response = await fetch(`/api/scans/${scanId}/live-state`, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const state = await response.json();
+        if (disconnected) disconnected.hidden = true;
+        if (stale) {
+          stale.hidden = !state.stale;
+          stale.textContent = state.stale_message || 'No worker heartbeat detected.';
+        }
+        const statusNode = document.getElementById('live-status-value');
+        const phaseNode = document.getElementById('live-phase-value');
+        const agentNode = document.getElementById('live-agent-value');
+        const toolNode = document.getElementById('live-tool-value');
+        const activityNode = document.getElementById('live-last-activity-value');
+        if (statusNode) statusNode.innerHTML = badgeHtml(state.status);
+        if (phaseNode) phaseNode.textContent = state.current_phase || '-';
+        if (agentNode) agentNode.textContent = state.current_agent || '-';
+        if (toolNode) toolNode.textContent = state.current_tool || '-';
+        if (activityNode) activityNode.textContent = state.last_activity_at || '-';
+        document.querySelectorAll('.timeline-step').forEach(step => {
+          const phase = step.textContent.trim();
+          step.classList.toggle('running', phase === state.current_phase);
+          step.classList.toggle('pending', phase !== state.current_phase);
+        });
+        renderTable(document.getElementById('live-summary'), [{
+          scan_id: state.scan_id,
+          status: state.status,
+          current_phase: state.current_phase,
+          current_tool: state.current_tool,
+          progress_message: state.progress_message,
+          progress_percent: state.progress_percent,
+        }]);
+        renderTable(document.getElementById('live-process'), state.processes || []);
+        renderTable(document.getElementById('live-events'), state.latest_events || []);
+        renderTable(document.getElementById('live-tools'), state.latest_tool_runs || []);
+        renderTable(document.getElementById('live-ai'), state.latest_ai_calls || []);
+        renderTable(document.getElementById('live-payloads'), state.latest_payload_attempts || []);
+        renderTable(document.getElementById('live-evidence'), state.latest_evidence || []);
+        renderTable(document.getElementById('live-progress'), [{
+          completed: state.completed_count,
+          failed: state.failed_count,
+          missing_prerequisite: state.missing_prerequisite_count,
+          planned: state.total_planned_count,
+          running_tool: state.running_tool ? state.running_tool.tool_name : '',
+        }]);
+        applyActionStates();
+      } catch (error) {
+        if (disconnected) disconnected.hidden = false;
       }
-    }, 2000);
+    };
+    updateLive();
+    setInterval(updateLive, 2000);
   }
 }

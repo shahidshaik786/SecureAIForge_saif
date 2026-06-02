@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from saif.config import get_settings
 from saif.db import session_scope
-from saif.db.models import AgentJob, AiCallRun, Evidence, Log, Scan, ScanEvent, ScanPhase, ScanProcess, ToolRun
+from saif.db.models import AgentJob, AiCallRun, Evidence, Log, Scan, ScanEvent, ScanPhase, ScanProcess, ToolRun, ScanStatus
 
 
 def emit_progress(
@@ -31,6 +31,17 @@ def emit_progress(
     live: bool = False,
 ) -> None:
     now = datetime.now(timezone.utc)
+    if event_type in {"scan_started", "phase_started", "agent_started", "tool_started", "ai_call_started", "heartbeat"}:
+        if getattr(scan, "status", None) not in {
+            ScanStatus.PAUSED.value,
+            ScanStatus.STOPPING.value,
+            ScanStatus.STOPPED.value,
+            ScanStatus.COMPLETED.value,
+            ScanStatus.FAILED.value,
+            ScanStatus.FAILED_SYSTEM.value,
+            ScanStatus.FAILED_PRECHECK.value,
+        }:
+            scan.status = ScanStatus.RUNNING.value
     scan.last_activity_at = now
     if phase is not None:
         scan.current_phase = phase

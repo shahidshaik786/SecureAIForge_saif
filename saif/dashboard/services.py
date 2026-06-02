@@ -190,6 +190,8 @@ def serialize_tool_run(run: ToolRun) -> dict:
             "exit_code": getattr(run, "exit_code", None),
             "evidence_path": getattr(run, "evidence_path", None),
             "error": getattr(run, "error", None) or getattr(run, "error_message", None),
+            "reason": (getattr(run, "output", None) or {}).get("reason") if isinstance(getattr(run, "output", None), dict) else None,
+            "retry_status": (getattr(run, "output", None) or {}).get("resolver") if isinstance(getattr(run, "output", None), dict) else None,
         }
     )
 
@@ -590,3 +592,85 @@ MODELS = {
 
 def watch(session: Session, scan_id: int) -> dict:
     return safe_json(watch_snapshot(session, scan_id))
+
+
+def live_state(session: Session, scan_id: int) -> dict:
+    scan = _scan(session, scan_id)
+    status = status_snapshot(session, scan_id)
+    latest_events = [
+        serialize_event(item)
+        for item in session.scalars(
+            select(ScanEvent).where(ScanEvent.scan_id == scan_id).order_by(desc(ScanEvent.id)).limit(20)
+        ).all()
+    ]
+    latest_tool_runs = [
+        serialize_tool_run(item)
+        for item in session.scalars(
+            select(ToolRun).where(ToolRun.scan_id == scan_id).order_by(desc(ToolRun.id)).limit(20)
+        ).all()
+    ]
+    latest_ai_calls = [
+        serialize_ai_call(item)
+        for item in session.scalars(
+            select(AiCallRun).where(AiCallRun.scan_id == scan_id).order_by(desc(AiCallRun.id)).limit(10)
+        ).all()
+    ]
+    latest_payload_attempts = [
+        serialize_payload_attempt(item)
+        for item in session.scalars(
+            select(PayloadAttempt).where(PayloadAttempt.scan_id == scan_id).order_by(desc(PayloadAttempt.id)).limit(10)
+        ).all()
+    ]
+    latest_evidence = [
+        row(item)
+        for item in session.scalars(
+            select(Evidence).where(Evidence.scan_id == scan_id).order_by(desc(Evidence.id)).limit(10)
+        ).all()
+    ]
+    processes = [
+        serialize_scan_process(item)
+        for item in session.scalars(
+            select(ScanProcess).where(ScanProcess.scan_id == scan_id).order_by(desc(ScanProcess.id)).limit(5)
+        ).all()
+    ]
+    running_tool = session.scalar(
+        select(ToolRun).where(ToolRun.scan_id == scan_id, ToolRun.status == "running").order_by(desc(ToolRun.id)).limit(1)
+    )
+    completed_count = session.scalar(select(func.count(ToolRun.id)).where(ToolRun.scan_id == scan_id, ToolRun.status.in_(["completed", "finding_created"]))) or 0
+    failed_count = session.scalar(select(func.count(ToolRun.id)).where(ToolRun.scan_id == scan_id, ToolRun.status.in_(["failed", "execution_error", "tool_install_failed", "invalid_request_template"]))) or 0
+    missing_count = session.scalar(select(func.count(ToolRun.id)).where(ToolRun.scan_id == scan_id, ToolRun.status == "missing_prerequisite")) or 0
+    total_planned_count = session.scalar(select(func.count(TestCase.id)).where(TestCase.scan_id == scan_id)) or 0
+    seconds = status.get("seconds_since_activity")
+    stale = bool(status.get("status") in {"running", "running_stale", "worker_stale"} and seconds is not None and int(seconds) > 60)
+    return safe_json(
+        {
+            "scan_id": scan_id,
+            "status": status.get("status") or scan.status,
+            "current_phase": status.get("current_phase") or scan.current_phase,
+            "current_agent": status.get("current_agent") or scan.current_agent,
+            "current_tool": status.get("current_tool") or scan.current_tool,
+            "progress_message": status.get("progress_message") or scan.progress_message,
+            "last_activity_at": status.get("last_activity") or iso(scan.last_activity_at),
+            "process_status": status.get("worker_status"),
+            "latest_events": latest_events,
+            "latest_tool_runs": latest_tool_runs,
+            "latest_ai_calls": latest_ai_calls,
+            "latest_payload_attempts": latest_payload_attempts,
+            "latest_evidence": latest_evidence,
+            "processes": processes,
+            "running_tool": serialize_tool_run(running_tool) if running_tool else None,
+            "completed_count": completed_count,
+            "failed_count": failed_count,
+            "missing_prerequisite_count": missing_count,
+            "total_planned_count": total_planned_count,
+            "progress_percent": status.get("progress_percent") or scan.progress_percent or _progress_percent(completed_count, total_planned_count),
+            "stale": stale,
+            "stale_message": "No worker heartbeat detected" if stale else None,
+        }
+    )
+
+
+def _progress_percent(completed_count: int, total_planned_count: int) -> int:
+    if total_planned_count <= 0:
+        return 0
+    return min(100, int((completed_count / total_planned_count) * 100))

@@ -105,8 +105,10 @@ PostgreSQL is required from day one. SQLite is not supported.
 Open:
 
 ```text
-http://127.0.0.1:8787
+http://192.168.0.7:8787
 ```
+
+`./saif.sh dashboard start` binds to all interfaces by default through `SAIF_DASHBOARD_HOST=0.0.0.0`, so LAN devices can reach the dashboard by using the WSL/host IP address. On the same machine, `http://127.0.0.1:8787` also works.
 
 ## Start Full Authorized Web/API Test
 

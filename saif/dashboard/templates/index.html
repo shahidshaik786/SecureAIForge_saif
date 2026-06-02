@@ -250,15 +250,17 @@
 {% set watch_data = watch | default({}, true) %}
 {% set status = watch_data.status | default(watch_data.summary | default({}, true), true) %}
 <section class="panel live-panel">
-  <div class="panel-title"><h2>Live Scan Monitor {{ "#" ~ scan_id if scan_id else "" }}</h2><div class="actions">{% if scan_id %}<button data-action="/api/scans/{{ scan_id }}/pause" class="warning">Pause</button><button data-action="/api/scans/{{ scan_id }}/resume" class="success">Resume</button><button data-action="/api/scans/{{ scan_id }}/stop" class="danger">Stop</button><button data-action="/api/scans/{{ scan_id }}/stop-force" class="danger">Force Stop</button><button data-action="/api/scans/{{ scan_id }}/continue?phase=account_provisioning">Continue Phase</button><button data-action="/api/scans/{{ scan_id }}/auth/validate">Validate Auth</button><button data-action="/api/scans/{{ scan_id }}/auth/relogin">Re-login</button>{% else %}<a class="button primary" href="/control">Start Scan</a>{% endif %}</div></div>
+  <div class="panel-title"><h2>Live Scan Monitor {{ "#" ~ scan_id if scan_id else "" }}</h2><div class="actions">{% if scan_id %}<button data-action="/api/scans/{{ scan_id }}/pause" class="warning">Pause</button><button data-action="/api/scans/{{ scan_id }}/resume" class="success">Resume</button><button data-action="/api/scans/{{ scan_id }}/stop" class="danger">Stop</button><button data-action="/api/scans/{{ scan_id }}/stop-force" class="danger">Force Stop</button><button data-action="/api/scans/{{ scan_id }}/continue?phase=account_provisioning">Continue Phase</button><button data-action="/api/scans/{{ scan_id }}/resolve-prerequisites">Resolve Prerequisites & Retry</button><button data-action="/api/scans/{{ scan_id }}/auth/validate">Validate Auth</button><button data-action="/api/scans/{{ scan_id }}/auth/relogin">Re-login</button>{% else %}<a class="button primary" href="/control">Start Scan</a>{% endif %}</div></div>
   {% if scan_id %}
+    <div id="live-disconnect" class="notice warning" hidden>Live update disconnected. Retrying...</div>
+    <div id="live-stale" class="notice warning" hidden>No worker heartbeat detected.</div>
     <div class="detail-grid" id="live-status">
       <div class="detail-item"><span>Scan ID</span><strong>#{{ scan_id }}</strong></div>
-      <div class="detail-item"><span>Status</span><strong>{{ badge(status.status) }}</strong></div>
-      <div class="detail-item"><span>Current Phase</span><strong>{{ status.current_phase or "-" }}</strong></div>
-      <div class="detail-item"><span>Current Agent</span><strong>{{ status.current_agent or "-" }}</strong></div>
-      <div class="detail-item"><span>Current Tool</span><strong>{{ status.current_tool or "-" }}</strong></div>
-      <div class="detail-item"><span>Last Activity</span><strong>{{ status.last_activity or "-" }}</strong></div>
+      <div class="detail-item"><span>Status</span><strong id="live-status-value">{{ badge(status.status) }}</strong></div>
+      <div class="detail-item"><span>Current Phase</span><strong id="live-phase-value">{{ status.current_phase or "-" }}</strong></div>
+      <div class="detail-item"><span>Current Agent</span><strong id="live-agent-value">{{ status.current_agent or "-" }}</strong></div>
+      <div class="detail-item"><span>Current Tool</span><strong id="live-tool-value">{{ status.current_tool or "-" }}</strong></div>
+      <div class="detail-item"><span>Last Activity</span><strong id="live-last-activity-value">{{ status.last_activity or "-" }}</strong></div>
     </div>
     <div class="timeline">
       {% for phase in ["precheck","ai_planning","enumeration","api_discovery","auth_mapping","account_provisioning","login_session","session_validation","token_analysis","authenticated_crawling","authorization_testing","input_validation_testing","business_logic_testing","reporting"] %}
@@ -266,14 +268,14 @@
       {% endfor %}
     </div>
     <section class="grid2 live-grid">
-      <div class="panel inner"><h3>Scan Summary</h3><div id="live-summary" data-json="/api/scans/{{ scan_id }}"></div></div>
-      <div class="panel inner"><h3>Process</h3><div id="live-process" data-json="/api/scans/{{ scan_id }}/processes"></div></div>
-      <div class="panel inner"><h3>Latest Events</h3><div id="live-events" data-json="/api/scans/{{ scan_id }}/events"></div></div>
-      <div class="panel inner"><h3>Tool Runs</h3><div id="live-tools" data-json="/api/scans/{{ scan_id }}/tool-runs"></div></div>
-      <div class="panel inner"><h3>AI Calls</h3><div id="live-ai" data-json="/api/scans/{{ scan_id }}/ai-calls"></div></div>
-      <div class="panel inner"><h3>Payload Attempts</h3><div id="live-payloads" data-json="/api/scans/{{ scan_id }}/payload-attempts"></div></div>
-      <div class="panel inner"><h3>Evidence</h3><div id="live-evidence" data-json="/api/scans/{{ scan_id }}/evidence"></div></div>
-      <div class="panel inner"><h3>Runtime Log</h3><div id="live-logs" data-json="/api/scans/{{ scan_id }}/logs/tail"></div></div>
+      <div class="panel inner"><h3>Scan Summary</h3><div id="live-summary"></div></div>
+      <div class="panel inner"><h3>Process</h3><div id="live-process"></div></div>
+      <div class="panel inner"><h3>Latest Events</h3><div id="live-events"></div></div>
+      <div class="panel inner"><h3>Tool Runs</h3><div id="live-tools"></div></div>
+      <div class="panel inner"><h3>AI Calls</h3><div id="live-ai"></div></div>
+      <div class="panel inner"><h3>Payload Attempts</h3><div id="live-payloads"></div></div>
+      <div class="panel inner"><h3>Evidence</h3><div id="live-evidence"></div></div>
+      <div class="panel inner"><h3>Progress</h3><div id="live-progress"></div></div>
     </section>
   {% else %}
     {{ empty_state("No scan selected. Open a scan from the scan list or start a new scan.") }}

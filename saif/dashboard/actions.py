@@ -45,6 +45,7 @@ def scan_actions(session: Session, scan: Scan) -> dict[str, dict]:
     account_context = _has_account_context(session, scan.id, scan)
     authz_context = _authz_context(session, scan.id, scan)
     pending_destructive = _pending_destructive_confirmation(scan)
+    missing_prerequisites = _missing_prerequisites_count(session, scan.id)
     actions = {
         "live_monitor": ButtonState(True, label="Live Monitor", css_class="btn-secondary"),
         "pause": ButtonState(status in RUNNING, None if status in RUNNING else "Pause is available only for running scans.", "Pause", "btn-warning"),
@@ -52,6 +53,7 @@ def scan_actions(session: Session, scan: Scan) -> dict[str, dict]:
         "stop": ButtonState(status in RUNNING | STARTING, None if status in RUNNING | STARTING else "Stop is available only while a scan is running, planning, or resuming.", "Stop", "btn-danger", True),
         "force_stop": ButtonState(bool(active_process), None if active_process else "Force Stop requires an active tracked worker process.", "Force Stop", "btn-danger", True),
         "continue_phase": ButtonState(status in CONTINUABLE, None if status != "running" else "Cannot continue phase while scan is running.", "Continue Phase", "btn-secondary"),
+        "resolve_prerequisites": ButtonState(missing_prerequisites > 0 and status not in RUNNING | STARTING, None if missing_prerequisites > 0 else "No missing prerequisite tool runs are currently recorded.", "Resolve Prerequisites & Retry", "btn-secondary"),
         "generate_report": ButtonState(reportable, None if reportable else "Generate Report requires completed phases, findings, tool runs, or evidence.", "Generate Report", "btn-secondary"),
         "generate_html": ButtonState(reportable, None if reportable else "HTML report requires reportable scan data.", "Generate HTML", "btn-secondary"),
         "generate_json": ButtonState(True, label="Generate JSON", css_class="btn-secondary"),
@@ -78,6 +80,7 @@ def validate_scan_action(session: Session, scan: Scan, action: str) -> tuple[boo
         "stop-force": "force_stop",
         "continue": "continue_phase",
         "run-phase": "continue_phase",
+        "resolve-prerequisites": "resolve_prerequisites",
         "report": "generate_report",
     }
     state = get_button_state(session, scan, mapping.get(action, action))
@@ -142,6 +145,12 @@ def _has_account_context(session: Session, scan_id: int, scan: Scan) -> bool:
 def _authz_context(session: Session, scan_id: int, scan: Scan) -> bool:
     sessions = session.scalar(select(func.count(AuthenticatedSession.id)).where(AuthenticatedSession.scan_id == scan_id)) or 0
     return bool(sessions >= 2 or scan.allow_account_generation)
+
+
+def _missing_prerequisites_count(session: Session, scan_id: int) -> int:
+    if not hasattr(session, "scalar"):
+        return 0
+    return session.scalar(select(func.count(ToolRun.id)).where(ToolRun.scan_id == scan_id, ToolRun.status == "missing_prerequisite")) or 0
 
 
 def _can_create_accounts(session: Session, scan: Scan) -> bool:

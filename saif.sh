@@ -411,7 +411,7 @@ Commands:
   fix suggest --finding-id 1 --source-path /path/to/repo
   fix patch --finding-id 1 --source-path /path/to/repo --dry-run
   dashboard start
-  dashboard start --host 127.0.0.1 --port 8787
+  dashboard start --host 0.0.0.0 --port 8787
   dashboard status
   dashboard stop
   logs tail --scan-id 1

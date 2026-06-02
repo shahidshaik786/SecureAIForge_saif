@@ -261,10 +261,92 @@ def select_tools(parsed: dict, target_url: str) -> list[str]:
     return _ordered_tools(list(dict.fromkeys(tools)))
 
 
+def tools_for_execution_profile(scan_config: dict | None) -> list[str]:
+    config = scan_config or {}
+    execution_profile = str(config.get("execution_profile") or "").strip()
+    destructive_policy = str(config.get("destructive_test_policy") or "").strip()
+    full_requested = bool(config.get("full")) or bool(config.get("select_all_applicable"))
+    authenticated_requested = bool(config.get("allow_authenticated_testing"))
+    authorization_requested = bool(config.get("allow_authorization_testing"))
+    payload_requested = bool(config.get("allow_payload_testing"))
+    rate_limit_requested = bool(config.get("allow_rate_limit_testing"))
+    destructive_requested = (
+        execution_profile == "destructive-full-scan"
+        or destructive_policy == "lab_full_allowed"
+        or bool(config.get("enable_destructive_tests"))
+    )
+    tools: list[str] = []
+    if destructive_requested or full_requested:
+        tools.extend(
+            [
+                "http_client",
+                "technology_fingerprint",
+                "security_headers_check",
+                "csp_headers_check",
+                "cors_check",
+                "cache_control_check",
+                "error_disclosure_check",
+                "root_link_inventory",
+                "robots_txt",
+                "sitemap_xml",
+                "openapi_discovery",
+                "static_asset_inventory",
+                "api_path_hints",
+                "api_profile_probe",
+                "api_method_probe",
+                "crawler",
+                "ffuf_api_paths",
+                "gobuster_api_paths",
+                "auth_session_mapping",
+                "account_provisioning",
+                "login_session",
+                "token_analysis",
+                "authenticated_crawling",
+                "authorization_matrix",
+                "idor_bola_bfla_planner",
+                "input_validation_planner",
+                "xss_adaptive",
+                "sqli_adaptive",
+                "ssrf_adaptive",
+                "jwt_adaptive",
+                "business_logic_planner",
+            ]
+        )
+        if rate_limit_requested or destructive_requested:
+            tools.append("rate_limit_planner")
+    elif authenticated_requested or authorization_requested:
+        tools.extend(
+            [
+                "auth_session_mapping",
+                "account_provisioning",
+                "login_session",
+                "token_analysis",
+                "authenticated_crawling",
+            ]
+        )
+        if authorization_requested:
+            tools.extend(["authorization_matrix", "idor_bola_bfla_planner"])
+    if payload_requested and not destructive_requested:
+        tools.extend(["input_validation_planner", "xss_adaptive", "sqli_adaptive", "ssrf_adaptive", "jwt_adaptive"])
+    return _ordered_tools(list(dict.fromkeys(tools)))
+
+
+def application_profile_for_existing_scan(existing_scan: Scan | None) -> str:
+    if not existing_scan:
+        return "auto"
+    config = existing_scan.scan_config or {}
+    return str(config.get("application_profile") or config.get("profile") or existing_scan.profile or "auto")
+
+
 def _ordered_tools(tools: list[str]) -> list[str]:
     priority = [
         "http_client",
         "technology_fingerprint",
+        "security_headers_check",
+        "csp_headers_check",
+        "cors_check",
+        "cache_control_check",
+        "error_disclosure_check",
         "root_link_inventory",
         "robots_txt",
         "sitemap_xml",
@@ -291,6 +373,7 @@ def _ordered_tools(tools: list[str]) -> list[str]:
         "ssrf_adaptive",
         "jwt_adaptive",
         "input_validation_planner",
+        "rate_limit_planner",
         "business_logic_planner",
         "nmap_top_ports",
     ]
@@ -328,11 +411,17 @@ def run_prompt_scan(
     if not any(parsed.values()):
         parsed["default_enumeration"] = True
     parser_selected_tools = select_tools(parsed, target_url)
+    profile_selected_tools = tools_for_execution_profile((existing_scan.scan_config if existing_scan else None) or {})
 
     runner = {
         "http_client": _run_http_baseline,
         "shodan_search": _run_shodan_search,
         "technology_fingerprint": _run_technology_fingerprint,
+        "security_headers_check": _run_security_headers_check,
+        "csp_headers_check": _run_csp_headers_check,
+        "cors_check": _run_cors_check,
+        "cache_control_check": _run_cache_control_check,
+        "error_disclosure_check": _run_error_disclosure_check,
         "root_link_inventory": _run_root_link_inventory,
         "robots_txt": _run_robots_txt,
         "sitemap_xml": _run_sitemap_xml,
@@ -364,15 +453,17 @@ def run_prompt_scan(
         "idor_bola_bfla_planner": _run_idor_bola_bfla_planner,
         "input_validation_planner": _run_input_validation_planner,
         "business_logic_planner": _run_business_logic_planner,
+        "rate_limit_planner": _run_rate_limit_planner,
         "auth_authorization_planner": _run_auth_authorization_planner,
     }
     ai_selected_tools = _normalize_ai_tools(ai_context.scan_plan.get("tools", []), runner.keys())
-    selected_tools = _ordered_tools(list(dict.fromkeys((ai_selected_tools or []) + parser_selected_tools)))
+    selected_tools = _ordered_tools(list(dict.fromkeys((ai_selected_tools or []) + parser_selected_tools + profile_selected_tools)))
     ai_context.scan_plan["mode"] = _mode_from_prompt(parsed)
+    ai_context.scan_plan["execution_profile_tools"] = profile_selected_tools
 
     scan = existing_scan or Scan(project_id=project.id)
     scan.project_id = project.id
-    scan.profile = _mode_from_prompt(parsed)
+    scan.profile = application_profile_for_existing_scan(existing_scan)
     scan.ai_provider = "Ollama"
     scan.authorized_testing_mode = True
     scan.engagement_mode = engagement_mode or _engagement_mode_from_prompt(parsed, credentials_path, source_path)
@@ -489,6 +580,41 @@ def run_prompt_scan(
                 break
             agent_name = _agent_for_tool(tool)
             phase_name = _phase_for_tool(tool)
+            dependency_block = _dependency_block_for_tool(session, scan, tool)
+            if dependency_block:
+                resolution = _resolve_missing_prerequisite(
+                    session,
+                    scan,
+                    tool,
+                    dependency_block,
+                    runner,
+                    target_url,
+                    prompt,
+                    parsed,
+                    console=console,
+                    debug_live=debug_live,
+                )
+                tool_results.extend(resolution.get("tool_results", []))
+                dependency_block = _dependency_block_for_tool(session, scan, tool)
+                if dependency_block:
+                    dependency_block["resolver"] = {key: value for key, value in resolution.items() if key != "tool_results"}
+                    result = _record_dependency_block(session, scan, tool, dependency_block, console=console)
+                    tool_results.append(result)
+                    if tool in planned_cases:
+                        planned_cases[tool].status = result.get("status") or RunStatus.MISSING_PREREQUISITE.value
+                    continue
+                emit_progress(
+                    session,
+                    scan,
+                    f"retry started after prerequisite resolution: {tool}",
+                    phase=phase_name,
+                    agent=agent_name,
+                    tool=tool,
+                    event_type="retry_started",
+                    context={"resolved_by": resolution.get("actions_taken", [])},
+                    console=console,
+                    live=True,
+                )
             emit_progress(session, scan, "agent started", phase=phase_name, agent=agent_name, tool=tool, event_type="agent_started", console=console, live=debug_live)
             emit_progress(session, scan, "started", phase=phase_name, agent=agent_name, tool=tool, event_type="tool_started", console=console, live=True)
             job = _create_agent_job(session, scan, agent_name, tool, AgentJobStatus.RUNNING.value, {"tool": tool, "target": target_url})
@@ -633,6 +759,11 @@ def run_prompt_scan(
 AGENT_BY_TOOL = {
     "http_client": "recon_agent",
     "technology_fingerprint": "recon_agent",
+    "security_headers_check": "recon_agent",
+    "csp_headers_check": "recon_agent",
+    "cors_check": "recon_agent",
+    "cache_control_check": "recon_agent",
+    "error_disclosure_check": "recon_agent",
     "nmap_top_ports": "recon_agent",
     "nmap_full_tcp": "recon_agent",
     "nmap_service_detection": "recon_agent",
@@ -663,6 +794,7 @@ AGENT_BY_TOOL = {
     "ssrf_adaptive": "input_validation_agent",
     "jwt_adaptive": "token_agent",
     "input_validation_planner": "input_validation_agent",
+    "rate_limit_planner": "business_logic_agent",
     "business_logic_planner": "business_logic_agent",
     "shodan_search": "recon_agent",
 }
@@ -737,6 +869,8 @@ def _create_planned_test_cases(session: Session, scan: Scan, selected_tools: lis
 
 
 def _phase_for_tool(tool: str) -> str:
+    if tool in {"security_headers_check", "csp_headers_check", "cors_check", "cache_control_check", "error_disclosure_check"}:
+        return "recon"
     if tool in {"openapi_discovery", "api_path_hints", "api_profile_probe", "api_method_probe", "ffuf_api_paths", "gobuster_api_paths"}:
         return "api_discovery"
     if tool in {"auth_session_mapping", "token_analysis", "account_provisioning", "login_session", "authenticated_crawling"}:
@@ -745,6 +879,8 @@ def _phase_for_tool(tool: str) -> str:
         return "authorization_testing"
     if tool in {"input_validation_planner", "xss_adaptive", "sqli_adaptive", "ssrf_adaptive"}:
         return "input_validation"
+    if tool == "rate_limit_planner":
+        return "business_logic_testing"
     if tool in {"jwt_adaptive"}:
         return "token_analysis"
     if tool in {"root_link_inventory", "robots_txt", "sitemap_xml", "static_asset_inventory", "katana", "crawler", "gobuster_dir", "ffuf_dir"}:
@@ -753,6 +889,8 @@ def _phase_for_tool(tool: str) -> str:
 
 
 def _category_for_tool(tool: str) -> str:
+    if tool in {"security_headers_check", "csp_headers_check", "cors_check", "cache_control_check", "error_disclosure_check"}:
+        return "security_headers"
     if "nmap" in tool:
         return "port_scan"
     if tool in {"gobuster_dir", "ffuf_dir"}:
@@ -767,6 +905,8 @@ def _category_for_tool(tool: str) -> str:
         return "authorization"
     if tool in {"xss_adaptive", "sqli_adaptive", "ssrf_adaptive"}:
         return "input_validation"
+    if tool == "rate_limit_planner":
+        return "rate_limiting"
     if tool == "jwt_adaptive":
         return "jwt"
     return tool
@@ -803,6 +943,266 @@ def _scan_control_status(session: Session, scan: Scan) -> str:
     if getattr(scan, "pause_requested", False):
         return ScanStatus.PAUSED.value
     return scan.status
+
+
+def _usable_session_count(session: Session, scan: Scan) -> int:
+    return (
+        session.query(AuthenticatedSession)
+        .filter(
+            AuthenticatedSession.scan_id == scan.id,
+            AuthenticatedSession.login_status == "login_success",
+            AuthenticatedSession.session_status == "usable",
+        )
+        .count()
+    )
+
+
+def _protected_endpoint_count(session: Session, scan: Scan) -> int:
+    return (
+        session.query(DiscoveredEndpoint)
+        .filter(DiscoveredEndpoint.scan_id == scan.id, DiscoveredEndpoint.endpoint_type == "authenticated_api")
+        .count()
+    )
+
+
+def _discovered_object_count(session: Session, scan: Scan) -> int:
+    return session.query(DiscoveredObject).filter(DiscoveredObject.scan_id == scan.id).count()
+
+
+def _request_templates(session: Session, scan: Scan, target_url: str | None = None) -> list[dict]:
+    params = session.query(DiscoveredParameter).filter(DiscoveredParameter.scan_id == scan.id).all()
+    templates = []
+    for param in params:
+        template = _request_template_for_parameter(session, scan, param, target_url or "")
+        if template:
+            templates.append(template)
+    return templates
+
+
+def _request_templates_count(session: Session, scan: Scan) -> int:
+    return len(_request_templates(session, scan))
+
+
+def _latest_tool_status(session: Session, scan: Scan, tool: str) -> str | None:
+    run = session.query(ToolRun).filter(ToolRun.scan_id == scan.id, ToolRun.tool_name == tool).order_by(ToolRun.id.desc()).first()
+    return run.status if run else None
+
+
+def _dependency_block_for_tool(session: Session, scan: Scan, tool: str) -> dict | None:
+    usable_sessions = _usable_session_count(session, scan)
+    protected_endpoints = _protected_endpoint_count(session, scan)
+    objects = _discovered_object_count(session, scan)
+    templates = _request_templates_count(session, scan)
+    if tool == "authenticated_crawling" and usable_sessions < 1:
+        return {
+            "missing_artifact": "valid_authenticated_session",
+            "reason": "authenticated crawling requires at least one login session validated against a protected endpoint",
+            "how_to_make_testable": "run account_provisioning and login_session, or provide valid credentials/session import",
+        }
+    if tool == "authorization_matrix":
+        if usable_sessions < 2:
+            return {
+                "missing_artifact": "valid_second_session",
+                "reason": "authorization matrix requires two valid authenticated sessions",
+                "how_to_make_testable": "create or provide two valid user sessions",
+            }
+        crawl_status = _latest_tool_status(session, scan, "authenticated_crawling")
+        if protected_endpoints < 1 and crawl_status != RunStatus.COMPLETED.value:
+            return {
+                "missing_artifact": "protected_endpoint_inventory",
+                "reason": "authorization matrix requires protected endpoints from authenticated crawling or prior discovery",
+                "how_to_make_testable": "run authenticated_crawling and confirm protected endpoint responses",
+            }
+    if tool == "idor_bola_bfla_planner":
+        if usable_sessions < 2:
+            return {
+                "missing_artifact": "valid_second_session",
+                "reason": "BOLA/BFLA planning requires two valid authenticated sessions",
+                "how_to_make_testable": "create or provide two valid user sessions",
+            }
+        if objects < 1:
+            return {
+                "missing_artifact": "object_ownership_map",
+                "reason": "BOLA/BFLA testing requires discovered object identifiers and ownership mapping",
+                "how_to_make_testable": "run authenticated_crawling/resource discovery to collect user-owned objects",
+            }
+    if tool in {"xss_adaptive", "sqli_adaptive", "ssrf_adaptive"}:
+        if (
+            getattr(scan, "enable_destructive_tests", False)
+            and getattr(scan, "allow_authenticated_testing", False)
+            and usable_sessions > 0
+            and _latest_tool_status(session, scan, "authenticated_crawling") != RunStatus.COMPLETED.value
+        ):
+            return {
+                "missing_artifact": "authenticated_endpoint_inventory",
+                "reason": f"{tool} waits for authenticated crawling in destructive full scans so authenticated payload tests do not run before session-dependent inventory is built",
+                "how_to_make_testable": "complete authenticated_crawling, or run an enumeration-only/public-input scan profile",
+            }
+        if templates < 1:
+            return {
+                "missing_artifact": "request_templates",
+                "reason": f"{tool} requires request templates built from forms, OpenAPI, JS requests, validation errors, or observed successful requests",
+                "how_to_make_testable": "run API discovery, method/schema classification, auth mapping, and request-shape discovery first",
+            }
+    if tool == "jwt_adaptive" and usable_sessions < 1 and not session.query(DiscoveredToken).filter(DiscoveredToken.scan_id == scan.id).count():
+        return {
+            "missing_artifact": "jwt_or_bearer_token",
+            "reason": "JWT testing requires captured tokens or a valid authenticated session",
+            "how_to_make_testable": "run login_session or provide bearer credentials",
+        }
+    if tool == "business_logic_planner" and protected_endpoints < 1 and usable_sessions > 0:
+        return {
+            "missing_artifact": "authenticated_endpoint_inventory",
+            "reason": "business logic testing requires authenticated endpoint inventory",
+            "how_to_make_testable": "run authenticated_crawling successfully first",
+        }
+    return None
+
+
+def _record_dependency_block(session: Session, scan: Scan, tool: str, block: dict, console: Console | None = None) -> dict:
+    status = RunStatus.MISSING_PREREQUISITE.value
+    output = {
+        "status": status,
+        "reason": block["reason"],
+        "required_artifact": block["missing_artifact"],
+        "how_to_make_testable": block.get("how_to_make_testable"),
+        "client_action_required": bool(block.get("client_action_required")),
+    }
+    emit_progress(
+        session,
+        scan,
+        f"dependency blocked: {tool} missing {block['missing_artifact']}",
+        level="INFO",
+        phase=_phase_for_tool(tool),
+        agent=_agent_for_tool(tool),
+        tool=tool,
+        event_type="dependency_blocked",
+        context=output,
+        console=console,
+        live=True,
+    )
+    return _record_tool(session, scan, tool, f"dependency check for {tool}", status, output, "orchestration", f"{tool} dependency blocked", f"dependency_blocked_{tool}")
+
+
+def _resolve_missing_prerequisite(
+    session: Session,
+    scan: Scan,
+    tool: str,
+    block: dict,
+    runner: dict,
+    target_url: str,
+    prompt: str,
+    parsed: dict,
+    *,
+    console: Console | None = None,
+    debug_live: bool = False,
+) -> dict:
+    missing = block.get("missing_artifact") or "unknown"
+    actions = _prerequisite_actions_for(missing, tool)
+    output = {"resolved": False, "actions_taken": [], "retry_allowed": False, "final_reason": block.get("reason"), "tool_results": []}
+    emit_progress(
+        session,
+        scan,
+        f"prerequisite resolution started tool={tool} missing={missing}",
+        phase=_phase_for_tool(tool),
+        agent="orchestrator_agent",
+        tool=tool,
+        event_type="prerequisite_resolution_started",
+        context={"tool": tool, "missing_artifact": missing, "reason": block.get("reason"), "actions": actions},
+        console=console,
+        live=True,
+    )
+    if not actions:
+        emit_progress(
+            session,
+            scan,
+            f"prerequisite resolution failed tool={tool} missing={missing}",
+            level="INFO",
+            phase=_phase_for_tool(tool),
+            agent="orchestrator_agent",
+            tool=tool,
+            event_type="prerequisite_resolution_failed",
+            context={"tool": tool, "missing_artifact": missing, "reason": "no resolver action available"},
+            console=console,
+            live=True,
+        )
+        return output
+    for action_tool in actions:
+        if action_tool == tool or action_tool not in runner:
+            continue
+        if _latest_tool_status(session, scan, action_tool) in {RunStatus.COMPLETED.value, RunStatus.FINDING_CREATED.value}:
+            output["actions_taken"].append({"tool": action_tool, "status": "already_completed"})
+            continue
+        action_phase = _phase_for_tool(action_tool)
+        action_agent = _agent_for_tool(action_tool)
+        emit_progress(
+            session,
+            scan,
+            f"prerequisite resolution action {action_tool}",
+            phase=action_phase,
+            agent=action_agent,
+            tool=action_tool,
+            event_type="prerequisite_resolution_action",
+            context={"blocked_tool": tool, "missing_artifact": missing, "resolver_tool": action_tool},
+            console=console,
+            live=True,
+        )
+        try:
+            with heartbeat(scan.id, phase=action_phase, agent=action_agent, tool=action_tool, console=console, live=debug_live):
+                result = runner[action_tool](session, scan, target_url, prompt, parsed)
+            output["tool_results"].append(result)
+            output["actions_taken"].append({"tool": action_tool, "status": result.get("status"), "evidence_path": result.get("evidence_path")})
+        except Exception as exc:
+            output["actions_taken"].append({"tool": action_tool, "status": RunStatus.EXECUTION_ERROR.value, "error": str(exc)})
+            emit_progress(
+                session,
+                scan,
+                f"prerequisite resolution action failed {action_tool}: {exc}",
+                level="ERROR",
+                phase=action_phase,
+                agent=action_agent,
+                tool=action_tool,
+                event_type="prerequisite_resolution_failed",
+                context={"blocked_tool": tool, "resolver_tool": action_tool, "error": str(exc)},
+                console=console,
+                live=True,
+            )
+    remaining = _dependency_block_for_tool(session, scan, tool)
+    output["resolved"] = remaining is None
+    output["retry_allowed"] = remaining is None
+    output["final_reason"] = None if remaining is None else remaining.get("reason")
+    emit_progress(
+        session,
+        scan,
+        f"prerequisite resolution {'completed' if output['resolved'] else 'failed'} tool={tool}",
+        level="INFO" if output["resolved"] else "ERROR",
+        phase=_phase_for_tool(tool),
+        agent="orchestrator_agent",
+        tool=tool,
+        event_type="prerequisite_resolution_completed" if output["resolved"] else "prerequisite_resolution_failed",
+        context={key: value for key, value in output.items() if key != "tool_results"},
+        console=console,
+        live=True,
+    )
+    return output
+
+
+def _prerequisite_actions_for(missing_artifact: str, blocked_tool: str) -> list[str]:
+    mapping = {
+        "valid_authenticated_session": ["login_session", "token_analysis"],
+        "valid_second_session": ["account_provisioning", "login_session", "token_analysis"],
+        "protected_endpoint_inventory": ["authenticated_crawling"],
+        "authenticated_endpoint_inventory": ["authenticated_crawling"],
+        "object_ownership_map": ["authenticated_crawling"],
+        "request_templates": ["api_method_probe", "input_validation_planner"],
+        "jwt_or_bearer_token": ["login_session", "token_analysis"],
+        "test_owned_resource": ["authenticated_crawling"],
+        "rate_limit_target": ["api_method_probe", "auth_session_mapping"],
+        "endpoint_inventory": ["api_profile_probe", "api_method_probe"],
+        "method_matrix": ["api_method_probe"],
+    }
+    actions = mapping.get(missing_artifact, [])
+    return [action for action in actions if action != blocked_tool]
 
 
 def _execution_summary(selected_tools: list[str], tool_results: list[dict]) -> list[dict]:
@@ -1689,6 +2089,58 @@ def _run_http_baseline(session: Session, scan: Scan, target_url: str, prompt: st
         if server:
             _finding(session, scan, "HTTP server header detected", f"Server header: {server}")
     return result
+
+
+def _headers_for_target(target_url: str) -> tuple[str, dict]:
+    status, output = _http_get(target_url)
+    headers = output.get("headers") or {}
+    return status, {str(key).lower(): value for key, value in headers.items()} | {"_status_code": output.get("status_code"), "_body_preview": output.get("body_preview", "")}
+
+
+def _run_security_headers_check(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
+    status, headers = _headers_for_target(target_url)
+    required = ["strict-transport-security", "x-content-type-options", "x-frame-options", "content-security-policy"]
+    missing = [name for name in required if not headers.get(name)]
+    output = {"checked_headers": required, "missing_headers": missing, "present_headers": {name: headers.get(name) for name in required if headers.get(name)}, "status_code": headers.get("_status_code")}
+    if missing:
+        _finding(session, scan, "Security headers missing", f"Missing security headers: {', '.join(missing)}")
+    return _record_tool(session, scan, "security_headers_check", f"GET {target_url} headers", status, output, "http", "Security headers check", "prompt_security_headers")
+
+
+def _run_csp_headers_check(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
+    status, headers = _headers_for_target(target_url)
+    csp = headers.get("content-security-policy")
+    output = {"content_security_policy": csp, "status_code": headers.get("_status_code"), "reason": None if csp else "Content-Security-Policy header not present"}
+    return _record_tool(session, scan, "csp_headers_check", f"GET {target_url} CSP header", status if csp else RunStatus.MISSING_PREREQUISITE.value, output, "http", "CSP header check", "prompt_csp_headers")
+
+
+def _run_cors_check(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
+    try:
+        response = httpx.get(target_url, headers={"Origin": "https://saif.example.test"}, follow_redirects=True, timeout=10)
+        allow_origin = response.headers.get("access-control-allow-origin")
+        output = {"origin_sent": "https://saif.example.test", "access_control_allow_origin": allow_origin, "status_code": response.status_code}
+        if allow_origin == "*":
+            _finding(session, scan, "Permissive CORS header observed", "Access-Control-Allow-Origin is wildcard for a cross-origin request.")
+        return _record_tool(session, scan, "cors_check", f"GET {target_url} with Origin header", RunStatus.COMPLETED.value, output, "http", "CORS header check", "prompt_cors")
+    except Exception as exc:
+        return _record_tool(session, scan, "cors_check", f"GET {target_url} with Origin header", RunStatus.EXECUTION_ERROR.value, {"error": str(exc)}, "http", "CORS header check", "prompt_cors")
+
+
+def _run_cache_control_check(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
+    status, headers = _headers_for_target(target_url)
+    cache_control = headers.get("cache-control")
+    output = {"cache_control": cache_control, "status_code": headers.get("_status_code"), "reason": None if cache_control else "Cache-Control header not present"}
+    return _record_tool(session, scan, "cache_control_check", f"GET {target_url} Cache-Control header", status, output, "http", "Cache-Control header check", "prompt_cache_control")
+
+
+def _run_error_disclosure_check(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
+    status, output = _http_get(urljoin(target_url.rstrip("/") + "/", "saif-nonexistent-probe"))
+    preview = (output.get("_text") or output.get("body_preview") or "")[:4000]
+    markers = _interesting_markers(preview)
+    result = {"status_code": output.get("status_code"), "markers": markers, "body_preview": preview[:1000]}
+    if markers:
+        _finding(session, scan, "Error disclosure markers observed", f"Error page contained markers: {', '.join(markers)}")
+    return _record_tool(session, scan, "error_disclosure_check", f"GET {target_url}/saif-nonexistent-probe", status, result, "http", "Error disclosure check", "prompt_error_disclosure")
 
 
 def _run_shodan_search(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
@@ -2586,6 +3038,30 @@ def _run_api_method_probe(session: Session, scan: Scan, target_url: str, prompt:
         "root_status_code": root_output.get("status_code"),
     }
     _artifact(session, scan, "api_method_probe", "method_probe", output)
+    emit_progress(
+        session,
+        scan,
+        f"endpoint inventory built endpoints={len(valid)} auth_endpoints={len(auth)}",
+        phase="api_discovery",
+        agent="api_discovery_agent",
+        tool="api_method_probe",
+        event_type="endpoint_inventory_built",
+        context={"valid_api_endpoints": len(valid), "auth_endpoints": len(auth), "tested_count": len(results)},
+    )
+    emit_progress(
+        session,
+        scan,
+        f"method matrix built endpoints={len(valid)} methods={','.join(output['methods_probed'])}",
+        phase="api_discovery",
+        agent="api_discovery_agent",
+        tool="api_method_probe",
+        event_type="method_matrix_built",
+        context={
+            "valid_api_endpoints": len(valid),
+            "methods_probed": output["methods_probed"],
+            "method_safety_policy": output["method_safety_policy"],
+        },
+    )
     return _record_tool(session, scan, "api_method_probe", "OPTIONS/GET/POST/PUT/PATCH/DELETE/HEAD probe API candidates", RunStatus.COMPLETED.value, output, "api", "API method probing", "prompt_api_method_probe")
 
 
@@ -2862,10 +3338,15 @@ def _validate_authenticated_session_token(session: Session, scan: Scan, target_u
     profile = profile_from_scan_artifacts(session, scan, target_url).profile
     candidates = protected_endpoint_candidates(profile) or ["/api/me", "/api/user", "/api/profile", "/me", "/profile", "/user"]
     validation_url = urljoin(target_url + "/", candidates[0].lstrip("/"))
+    emit_progress(session, scan, f"session validation started label={label}", phase="session_validation", agent="auth_agent", tool="login_session", event_type="session_validation_started", context={"session_label": label, "candidate_count": len(candidates)})
     if not access_token:
-        return {"session_status": "login_success_but_token_unavailable", "reason": "login did not return access token", "validation_url": validation_url}
+        result = {"session_status": "login_success_but_token_unavailable", "reason": "login did not return access token", "validation_url": validation_url}
+        emit_progress(session, scan, f"session validation completed label={label} status={result['session_status']}", phase="session_validation", agent="auth_agent", tool="login_session", event_type="session_validation_completed", context=result)
+        return result
     if _is_masked_token(access_token):
-        return {"session_status": "login_success_but_token_unavailable", "reason": "masked token cannot be used for validation", "validation_url": validation_url}
+        result = {"session_status": "login_success_but_token_unavailable", "reason": "masked token cannot be used for validation", "validation_url": validation_url}
+        emit_progress(session, scan, f"session validation completed label={label} status={result['session_status']}", phase="session_validation", agent="auth_agent", tool="login_session", event_type="session_validation_completed", context=result)
+        return result
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
         response = None
@@ -2896,12 +3377,20 @@ def _validate_authenticated_session_token(session: Session, scan: Scan, target_u
         path = write_evidence(scan.id, f"token_validation_{label}", evidence)
         session.add(Evidence(scan_id=scan.id, kind="auth", path=str(path), summary=f"Token validation for {label}: HTTP {response.status_code}", metadata_json={"tool": "token_validation", "session_label": label, "status_code": response.status_code}))
         if response.status_code == 200:
-            return {"session_status": "usable", "reason": None, "validation_url": validation_url, "status_code": response.status_code, "evidence_path": str(path)}
+            result = {"session_status": "usable", "reason": None, "validation_url": validation_url, "status_code": response.status_code, "evidence_path": str(path)}
+            emit_progress(session, scan, f"session validation completed label={label} status={result['session_status']}", phase="session_validation", agent="auth_agent", tool="login_session", event_type="session_validation_completed", context=result)
+            return result
         if response.status_code == 401:
-            return {"session_status": "login_success_but_token_rejected", "reason": "token rejected by protected endpoint", "validation_url": validation_url, "status_code": response.status_code, "evidence_path": str(path)}
-        return {"session_status": "login_success_validation_inconclusive", "reason": f"validation endpoint returned HTTP {response.status_code}", "validation_url": validation_url, "status_code": response.status_code, "evidence_path": str(path)}
+            result = {"session_status": "login_success_but_token_rejected", "reason": "token rejected by protected endpoint", "validation_url": validation_url, "status_code": response.status_code, "evidence_path": str(path)}
+            emit_progress(session, scan, f"session validation completed label={label} status={result['session_status']}", phase="session_validation", agent="auth_agent", tool="login_session", event_type="session_validation_completed", context=result)
+            return result
+        result = {"session_status": "login_success_validation_inconclusive", "reason": f"validation endpoint returned HTTP {response.status_code}", "validation_url": validation_url, "status_code": response.status_code, "evidence_path": str(path)}
+        emit_progress(session, scan, f"session validation completed label={label} status={result['session_status']}", phase="session_validation", agent="auth_agent", tool="login_session", event_type="session_validation_completed", context=result)
+        return result
     except Exception as exc:
-        return {"session_status": "login_success_validation_error", "reason": str(exc), "validation_url": validation_url}
+        result = {"session_status": "login_success_validation_error", "reason": str(exc), "validation_url": validation_url}
+        emit_progress(session, scan, f"session validation completed label={label} status={result['session_status']}", level="ERROR", phase="session_validation", agent="auth_agent", tool="login_session", event_type="session_validation_completed", context=result)
+        return result
 
 
 def _collect_ids(value, found: list[dict], path: str = "") -> None:
@@ -2917,10 +3406,22 @@ def _collect_ids(value, found: list[dict], path: str = "") -> None:
 
 
 def _run_authenticated_crawling(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
-    auth_sessions = _authenticated_sessions_for_scan(session, scan)
-    if not auth_sessions:
+    all_auth_sessions = _authenticated_sessions_for_scan(session, scan)
+    auth_sessions = [item for item in all_auth_sessions if item.session_status == "usable"]
+    if not all_auth_sessions:
         output = {"reason": "authenticated sessions not available"}
         return _record_tool(session, scan, "authenticated_crawling", "authenticated API crawl", RunStatus.MISSING_CREDENTIALS.value, output, "auth", "Authenticated crawling", "prompt_authenticated_crawling")
+    if not auth_sessions:
+        output = {
+            "reason": "login sessions exist but none validated as usable against protected endpoints",
+            "authenticated_sessions": [
+                {"label": item.credential_label, "login_status": item.login_status, "session_status": item.session_status}
+                for item in all_auth_sessions
+            ],
+            "required_artifact": "valid_authenticated_session",
+            "how_to_make_testable": "repair login/session validation or provide a valid bearer token/cookie for the target",
+        }
+        return _record_tool(session, scan, "authenticated_crawling", "authenticated API crawl", RunStatus.MISSING_PREREQUISITE.value, output, "auth", "Authenticated crawling", "prompt_authenticated_crawling")
     profile = profile_from_scan_artifacts(session, scan, target_url).profile
     paths = protected_endpoint_candidates(profile)
     if not paths:
@@ -2972,6 +3473,9 @@ def _run_authenticated_crawling(session: Session, scan: Scan, target_url: str, p
                 results.append({"session": auth_session.credential_label, "url": url, "error": str(exc)})
     output = {"requests": results, "objects_discovered": object_count, "session_statuses": session_statuses}
     _artifact(session, scan, "authenticated_crawling", "authenticated_api_inventory", output)
+    emit_progress(session, scan, f"authenticated inventory built endpoints={len([item for item in results if item.get('status_code') and item.get('status_code') != 404])} objects={object_count}", phase="authenticated_crawling", agent="auth_agent", tool="authenticated_crawling", event_type="authenticated_inventory_built", context={"endpoint_count": len([item for item in results if item.get("status_code") and item.get("status_code") != 404]), "object_count": object_count, "session_statuses": session_statuses})
+    if object_count:
+        emit_progress(session, scan, f"resource ownership map built objects={object_count}", phase="authenticated_crawling", agent="auth_agent", tool="authenticated_crawling", event_type="resource_ownership_map_built", context={"object_count": object_count})
     status = RunStatus.COMPLETED.value if any(value == RunStatus.COMPLETED.value for value in session_statuses.values()) else RunStatus.EXECUTION_ERROR.value
     if status == RunStatus.EXECUTION_ERROR.value:
         if any(item.get("token_was_masked") for item in results):
@@ -3622,6 +4126,97 @@ def _baseline_for_endpoint(url: str) -> dict:
         return {"error": str(exc), "status_code": None, "content_type": "", "body_hash": "", "body_length": 0, "interesting_markers": [], "_body": ""}
 
 
+def _request_template_for_parameter(session: Session, scan: Scan, param: DiscoveredParameter, target_url: str) -> dict | None:
+    endpoint = param.endpoint or target_url
+    if not endpoint:
+        return None
+    location = (param.location or "query").lower()
+    endpoint_path = urlparse(endpoint).path.lower()
+    profile = profile_from_scan_artifacts(session, scan, target_url).profile if target_url else {}
+    metadata = param.metadata_json or {}
+    method = str(metadata.get("method") or "").upper()
+    content_type = str(metadata.get("content_type") or "").lower()
+    if not method:
+        if location in {"json", "body"} or any(token in endpoint_path for token in ["signup", "register", "login", "auth", "token", "verify", "otp", "reset"]):
+            method = "POST"
+        elif location == "form":
+            method = "POST"
+        else:
+            method = "GET"
+    body_template = None
+    query_template = {}
+    if method in {"POST", "PUT", "PATCH"} or location in {"json", "body", "form"}:
+        user = _generated_users(scan.id)[0]
+        if any(token in endpoint_path for token in ["signup", "register"]):
+            candidates = registration_payloads(profile, user)
+            body_template = dict(candidates[0] if candidates else {"name": user["name"], "email": user["email"], "number": user["number"], "password": user["password"]})
+        elif any(token in endpoint_path for token in ["login", "token"]):
+            body_template = dict((login_payloads(profile, user["email"], user["password"]) or [{"email": user["email"], "password": user["password"]}])[0])
+        else:
+            body_template = dict(metadata.get("body_template") or {param.name: "__SAIF_PAYLOAD__"})
+        body_template.setdefault(param.name, "")
+        content_type = content_type or "application/json"
+    else:
+        query_template[param.name] = "__SAIF_PAYLOAD__"
+    return {
+        "endpoint": endpoint,
+        "method": method,
+        "parameter": param.name,
+        "parameter_location": "json" if body_template is not None else "query",
+        "content_type": content_type or None,
+        "body_template": body_template,
+        "query_template": query_template,
+        "source": param.source,
+        "metadata": metadata,
+    }
+
+
+def _execute_request_template(template: dict, payload: str | None = None) -> tuple[httpx.Response, dict]:
+    method = str(template["method"]).upper()
+    url = template["endpoint"]
+    headers = {}
+    params = dict(template.get("query_template") or {})
+    body = None
+    if template.get("body_template") is not None:
+        body = dict(template["body_template"])
+        if payload is not None:
+            body[template["parameter"]] = payload
+        headers["content-type"] = template.get("content_type") or "application/json"
+    else:
+        if payload is not None:
+            params[template["parameter"]] = payload
+    if method in {"POST", "PUT", "PATCH"}:
+        response = httpx.request(method, url, json=body, headers=headers, follow_redirects=False, timeout=8)
+    else:
+        response = httpx.request(method, url, params=params or None, follow_redirects=False, timeout=8)
+    request_summary = {
+        "method": method,
+        "url": url,
+        "parameter": template["parameter"],
+        "parameter_location": template["parameter_location"],
+        "content_type": headers.get("content-type"),
+        "body_fields": sorted((body or {}).keys()),
+        "query_fields": sorted(params.keys()),
+    }
+    return response, request_summary
+
+
+def _baseline_for_template(template: dict) -> dict:
+    try:
+        response, request_summary = _execute_request_template(template, None)
+        return {
+            "status_code": response.status_code,
+            "content_type": response.headers.get("content-type", ""),
+            "body_hash": _body_hash(response.text),
+            "body_length": len(response.text),
+            "interesting_markers": _interesting_markers(response.text),
+            "request_template": request_summary,
+            "_body": response.text,
+        }
+    except Exception as exc:
+        return {"error": str(exc), "status_code": None, "content_type": "", "body_hash": "", "body_length": 0, "interesting_markers": [], "request_template": template, "_body": ""}
+
+
 def _interesting_markers(body: str) -> list[str]:
     lowered = body.lower()
     markers = []
@@ -3727,19 +4322,40 @@ def _adaptive_payload_loop(session: Session, scan: Scan, vuln_type: str, categor
     decisions = []
     status = RunStatus.COMPLETED.value
     for param in params[:10]:
-        endpoint = param.endpoint or target_url
-        baseline = _baseline_for_endpoint(endpoint)
+        template = _request_template_for_parameter(session, scan, param, target_url)
+        if not template:
+            attempts.append({"endpoint": param.endpoint or target_url, "parameter": param.name, "status": RunStatus.INVALID_REQUEST_TEMPLATE.value, "reason": "no request template could be built"})
+            status = RunStatus.INVALID_REQUEST_TEMPLATE.value if status == RunStatus.COMPLETED.value else status
+            emit_progress(session, scan, f"invalid request template {vuln_type} {param.name}", phase=_phase_for_tool(f"{vuln_type}_adaptive"), agent=f"{vuln_type}_agent", tool=f"{vuln_type}_adaptive", event_type="invalid_request_template", context={"parameter": param.name, "endpoint": param.endpoint})
+            continue
+        endpoint = template["endpoint"]
+        baseline = _baseline_for_template(template)
         for index, payload in enumerate(payloads[: settings.max_ai_payload_iterations], start=1):
             try:
-                response = httpx.get(endpoint, params={param.name: payload}, follow_redirects=False, timeout=8)
+                response, request_summary = _execute_request_template(template, payload)
                 reflection = payload in response.text
                 error_marker = bool(_interesting_markers(response.text))
+                attempt_status = RunStatus.INVALID_REQUEST_TEMPLATE.value if response.status_code == 405 else RunStatus.COMPLETED.value
+                if attempt_status == RunStatus.INVALID_REQUEST_TEMPLATE.value:
+                    status = RunStatus.INVALID_REQUEST_TEMPLATE.value if status == RunStatus.COMPLETED.value else status
+                    emit_progress(
+                        session,
+                        scan,
+                        f"invalid request template {vuln_type} {param.name} status=405",
+                        phase=_phase_for_tool(f"{vuln_type}_adaptive"),
+                        agent=f"{vuln_type}_agent",
+                        tool=f"{vuln_type}_adaptive",
+                        event_type="invalid_request_template",
+                        context={"endpoint": endpoint, "parameter": param.name, "request_template": request_summary},
+                    )
                 attempt = {
                     "payload": payload,
-                    "location": "query",
+                    "location": template["parameter_location"],
                     "endpoint": endpoint,
+                    "method": template["method"],
                     "parameter": param.name,
                     "status_code": response.status_code,
+                    "request_template": request_summary,
                     "body_hash": _body_hash(response.text),
                     "body_length_delta": len(response.text) - int(baseline.get("body_length") or 0),
                     "reflection": reflection,
@@ -3748,7 +4364,17 @@ def _adaptive_payload_loop(session: Session, scan: Scan, vuln_type: str, categor
                 }
                 path = write_evidence(scan.id, f"adaptive_{vuln_type}_{param.name}_{index}", {"baseline": {k: v for k, v in baseline.items() if not k.startswith("_")}, "attempt": attempt})
                 attempt["evidence_path"] = str(path)
-                decision = _ai_analyze_attempt(session, scan, vuln_type, baseline, attempt)
+                if attempt_status == RunStatus.INVALID_REQUEST_TEMPLATE.value:
+                    decision = {
+                        "finding_candidate": False,
+                        "vulnerability_type": vuln_type,
+                        "confidence": "none",
+                        "reason": "HTTP 405 indicates the request template method/body is invalid for this endpoint; repair template before payload testing.",
+                        "reportable": False,
+                        "needs_manual_confirmation": False,
+                    }
+                else:
+                    decision = _ai_analyze_attempt(session, scan, vuln_type, baseline, attempt)
                 attempts.append(attempt)
                 decisions.append({"attempt": index, "parameter": param.name, "ai_decision": decision})
                 payload_attempt = PayloadAttempt(
@@ -3757,8 +4383,8 @@ def _adaptive_payload_loop(session: Session, scan: Scan, vuln_type: str, categor
                     agent_name=f"{vuln_type}_agent",
                     vulnerability_type=vuln_type,
                     endpoint=endpoint,
-                    method="GET",
-                    parameter_location="query",
+                    method=template["method"],
+                    parameter_location=template["parameter_location"],
                     parameter_name=param.name,
                     payload=payload,
                     payload_masked=_mask_token(payload) if "token" in param.name.lower() else payload,
@@ -3772,7 +4398,7 @@ def _adaptive_payload_loop(session: Session, scan: Scan, vuln_type: str, categor
                     error_marker_detected=error_marker,
                     protected_data_detected=False,
                     ai_decision_json=decision,
-                    status=RunStatus.FINDING_CREATED.value if decision.get("reportable") else RunStatus.COMPLETED.value,
+                    status=RunStatus.INVALID_REQUEST_TEMPLATE.value if response.status_code == 405 else RunStatus.FINDING_CREATED.value if decision.get("reportable") else RunStatus.COMPLETED.value,
                     evidence_path=str(path),
                 )
                 session.add(payload_attempt)
@@ -3965,6 +4591,23 @@ def _run_business_logic_planner(session: Session, scan: Scan, target_url: str, p
     ]
     output = {"candidate_endpoints": candidates[:100], "test_families": ["workflow abuse", "state transition checks", "role/tenant consistency", "rate/sequence checks"]}
     return _record_tool(session, scan, "business_logic_planner", "plan business logic tests", RunStatus.PLANNED.value if candidates else RunStatus.NOT_APPLICABLE.value, output, "business_logic", "Business logic planning", "prompt_business_logic")
+
+
+def _run_rate_limit_planner(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
+    endpoints = session.query(DiscoveredEndpoint).filter(DiscoveredEndpoint.scan_id == scan.id).all()
+    candidates = [
+        endpoint.url
+        for endpoint in endpoints
+        if any(token in endpoint.url.lower() for token in ["login", "signup", "register", "otp", "verify", "forgot", "reset", "coupon", "auth"])
+    ]
+    output = {
+        "candidate_endpoints": candidates[:100],
+        "test_families": ["rate limiting", "OTP throttling", "password reset throttling", "coupon/validation throttling"],
+        "execution_policy": "planner_only_until request pacing and account prerequisites are available",
+        "required_artifact": "confirmed endpoint plus rate-test policy and test-owned account/session",
+    }
+    status = RunStatus.MANUAL_CONFIRMATION_REQUIRED.value if candidates else RunStatus.MISSING_PREREQUISITE.value
+    return _record_tool(session, scan, "rate_limit_planner", "plan rate limit and OTP tests", status, output, "business_logic", "Rate limit and OTP planning", "prompt_rate_limit")
 
 
 def _run_auth_authorization_planner(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:

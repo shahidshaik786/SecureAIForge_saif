@@ -1279,10 +1279,10 @@ def report_generate(
 
 @dashboard_app.command("start")
 def dashboard_start(
-    host: str = typer.Option("127.0.0.1", "--host"),
-    port: int = typer.Option(8787, "--port"),
-    allow_remote: bool = typer.Option(False, "--allow-remote"),
-    no_auth_explicitly_allowed: bool = typer.Option(False, "--no-auth-explicitly-allowed"),
+    host: str | None = typer.Option(None, "--host"),
+    port: int | None = typer.Option(None, "--port"),
+    allow_remote: bool | None = typer.Option(None, "--allow-remote/--no-allow-remote"),
+    no_auth_explicitly_allowed: bool | None = typer.Option(None, "--no-auth-explicitly-allowed/--require-dashboard-auth"),
 ) -> None:
     """Start local dashboard and API server."""
     try:

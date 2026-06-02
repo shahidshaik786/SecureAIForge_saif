@@ -214,6 +214,22 @@ def _create_dashboard_scan(payload: dict) -> dict:
             "selected_test_categories": payload.get("selected_test_categories") or [],
         }
     )
+    if scan_options.get("execution_profile") == "destructive-full-scan":
+        if not scan_options.get("confirm_authorized"):
+            raise ValueError("Target authorization confirmation is required for Destructive Test Cases - Full Authorized Scan.")
+        if not scan_options.get("confirm_destructive_testing"):
+            raise ValueError("Destructive testing confirmation is required for Destructive Test Cases - Full Authorized Scan.")
+        engagement_mode = "gray_box"
+        scan_options["engagement_mode"] = engagement_mode
+        scan_options["full"] = True
+        scan_options["enumeration_only"] = False
+        scan_options["allow_account_generation"] = True
+        scan_options["allow_authenticated_testing"] = True
+        scan_options["allow_authorization_testing"] = True
+        scan_options["allow_payload_testing"] = True
+        scan_options["allow_rate_limit_testing"] = True
+        scan_options["allow_test_owned_object_creation"] = True
+        scan_options["enable_destructive_tests"] = True
     now = datetime.now(timezone.utc)
     with session_scope() as session:
         project_name = str(payload.get("project") or _dashboard_project_name(target, profile))
@@ -228,16 +244,16 @@ def _create_dashboard_scan(payload: dict) -> dict:
             source_path=payload.get("source_path"),
             scan_config=scan_options,
             auth_mode=payload.get("auth_mode") or "auto",
-            destructive_method_policy=payload.get("destructive_method_policy"),
-            enable_destructive_tests=bool(payload.get("enable_destructive_tests")),
-            destructive_test_policy=destructive_policy,
-            allow_test_owned_object_creation=bool(payload.get("allow_test_owned_object_creation")),
-            confirm_destructive_testing=bool(payload.get("confirm_destructive_testing")),
-            allow_account_generation=bool(payload.get("allow_account_generation")),
-            allow_authenticated_testing=bool(payload.get("allow_authenticated_testing")),
-            allow_authorization_testing=bool(payload.get("allow_authorization_testing")),
-            allow_payload_testing=bool(payload.get("allow_payload_testing")),
-            allow_rate_limit_testing=bool(payload.get("allow_rate_limit_testing")),
+            destructive_method_policy=scan_options.get("destructive_method_policy"),
+            enable_destructive_tests=bool(scan_options.get("enable_destructive_tests")),
+            destructive_test_policy=scan_options.get("destructive_test_policy") or destructive_policy,
+            allow_test_owned_object_creation=bool(scan_options.get("allow_test_owned_object_creation")),
+            confirm_destructive_testing=bool(scan_options.get("confirm_destructive_testing")),
+            allow_account_generation=bool(scan_options.get("allow_account_generation")),
+            allow_authenticated_testing=bool(scan_options.get("allow_authenticated_testing")),
+            allow_authorization_testing=bool(scan_options.get("allow_authorization_testing")),
+            allow_payload_testing=bool(scan_options.get("allow_payload_testing")),
+            allow_rate_limit_testing=bool(scan_options.get("allow_rate_limit_testing")),
             status=ScanStatus.CREATED.value,
             started_at=now,
             current_phase="precheck",
@@ -257,17 +273,17 @@ def _create_dashboard_scan(payload: dict) -> dict:
                 "target": target,
                 "profile": profile,
                 "engagement_mode": engagement_mode,
-                "full": bool(payload.get("full")),
-                "enumeration_only": bool(payload.get("enumeration_only")),
+                "full": bool(scan_options.get("full")),
+                "enumeration_only": bool(scan_options.get("enumeration_only")),
                 "execution_profile": scan_options["execution_profile"],
-                "destructive_test_policy": destructive_policy,
-                "enable_destructive_tests": bool(payload.get("enable_destructive_tests")),
-                "allow_account_generation": bool(payload.get("allow_account_generation")),
-                "allow_authenticated_testing": bool(payload.get("allow_authenticated_testing")),
-                "allow_authorization_testing": bool(payload.get("allow_authorization_testing")),
-                "allow_payload_testing": bool(payload.get("allow_payload_testing")),
-                "allow_rate_limit_testing": bool(payload.get("allow_rate_limit_testing")),
-                "selected_test_categories": payload.get("selected_test_categories") or [],
+                "destructive_test_policy": scan_options.get("destructive_test_policy"),
+                "enable_destructive_tests": bool(scan_options.get("enable_destructive_tests")),
+                "allow_account_generation": bool(scan_options.get("allow_account_generation")),
+                "allow_authenticated_testing": bool(scan_options.get("allow_authenticated_testing")),
+                "allow_authorization_testing": bool(scan_options.get("allow_authorization_testing")),
+                "allow_payload_testing": bool(scan_options.get("allow_payload_testing")),
+                "allow_rate_limit_testing": bool(scan_options.get("allow_rate_limit_testing")),
+                "selected_test_categories": scan_options.get("selected_test_categories") or [],
             },
         )
         return {"scan_id": scan.id, "project": project.name, "target": target}
@@ -451,6 +467,14 @@ def add_api_routes(app: FastAPI) -> None:
         content = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         return api_response([{"line": line} for line in content[-max(1, min(lines, 1000)):]])
 
+    @app.get("/api/scans/{scan_id}/live-state")
+    def api_live_state(scan_id: int):
+        with session_scope() as session:
+            try:
+                return api_response(services.live_state(session, scan_id))
+            except ValueError:
+                return api_not_found(f"scan {scan_id} not found")
+
     @app.get("/api/scans/{scan_id}/{resource}")
     def api_scan_resource(scan_id: int, resource: str):
         if resource == "actions":
@@ -541,8 +565,21 @@ def add_api_routes(app: FastAPI) -> None:
 
     @app.post("/api/scans/{scan_id}/{action}")
     def api_scan_action(scan_id: int, action: str, phase: str | None = None):
-        if action not in {"pause", "resume", "stop", "stop-force", "continue", "run-phase", "report"}:
+        if action not in {"pause", "resume", "stop", "stop-force", "continue", "run-phase", "resolve-prerequisites", "report"}:
             raise HTTPException(404)
+        if action == "resolve-prerequisites":
+            selected_phase = "authenticated_crawling"
+            with session_scope() as session:
+                scan = session.get(Scan, scan_id)
+                if not scan:
+                    return api_not_found(f"scan {scan_id} not found")
+                ok, reason = services.validate_scan_action(session, scan, action)
+                if not ok:
+                    return api_response({"ok": False, "error": reason, "scan_status": scan.status}, status_code=409)
+                scan.progress_message = "Resolve prerequisites requested"
+                emit_progress(session, scan, scan.progress_message, event_type="resolve_prerequisites_requested", context={"requested_by": "dashboard"})
+            cmd = [sys.executable, "-m", "saif.cli", "scan", "continue", "--scan-id", str(scan_id), "--phase", selected_phase, "--full", "--debug"]
+            return api_response(_start_background_command(cmd, scan_id=scan_id, log_path=str(get_settings().log_dir / f"scan-{scan_id}.log")) | {"phase": selected_phase}, status_code=202)
         if action in {"continue", "run-phase"}:
             selected_phase = phase or "account_provisioning"
             with session_scope() as session:

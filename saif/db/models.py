@@ -40,6 +40,7 @@ class RunStatus(StrEnum):
     OUT_OF_SCOPE = "out_of_scope"
     MANUAL_CONFIRMATION_REQUIRED = "manual_confirmation_required"
     EXECUTION_ERROR = "execution_error"
+    INVALID_REQUEST_TEMPLATE = "invalid_request_template"
     SKIPPED_REQUIRES_TEST_OWNED_OBJECT = "skipped_requires_test_owned_object"
     SKIPPED_REQUIRES_MANUAL_CONFIRMATION = "skipped_requires_manual_confirmation"
     PAUSED = "paused"
