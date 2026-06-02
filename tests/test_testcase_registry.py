@@ -28,6 +28,13 @@ class TestCaseRegistryTests(unittest.TestCase):
         registry = load_testcases("generic-rest-api")
         self.assertEqual(registry.profile, "api-security")
 
+    def test_ui_application_profiles_fall_back_to_generic_web_api_registry(self) -> None:
+        for profile in ["custom", "juice-shop", "owasp-juice-shop", "dvwa", "generic-web-api"]:
+            with self.subTest(profile=profile):
+                registry = load_testcases(profile)
+                self.assertEqual(registry.profile, "web-api")
+                self.assertTrue(any(item.id == "recon.http_baseline" for item in registry.test_cases))
+
 
 if __name__ == "__main__":
     unittest.main()
