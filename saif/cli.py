@@ -28,6 +28,7 @@ from saif.services.doctor import run_doctor
 from saif.services.prompt_runner import extract_target, parse_prompt, run_prompt_scan, select_tools
 from saif.services.progress import emit_progress, latest_evidence_path, status_snapshot, watch_snapshot
 from saif.services.reporting import generate_report
+from saif.services.scan_config import normalize_scan_config
 from saif.services.case_management import completed_tools, ensure_scan_phases, production_readiness_for_scan, scan_summary, scan_target, sync_scan_phases, tools_for_phase, mark_phase
 from saif.services.dashboard import dashboard_status as dashboard_status_payload, run_dashboard, stop_dashboard
 from saif.services.targets import resolve_target, upsert_project_target
@@ -498,10 +499,80 @@ def scan_run_existing(
                 .order_by(ScanEvent.id.desc())
             )
             dashboard_options = {**(scan.scan_config or {}), **(dict(created_event.context_json or {}) if created_event else {})}
+            dashboard_options.update(
+                {
+                    "application_profile": dashboard_options.get("application_profile") or scan.profile,
+                    "profile": dashboard_options.get("profile") or scan.profile,
+                    "engagement_mode": scan.engagement_mode or dashboard_options.get("engagement_mode"),
+                    "allow_authenticated_testing": bool(scan.allow_authenticated_testing),
+                    "allow_authorization_testing": bool(scan.allow_authorization_testing),
+                    "allow_payload_testing": bool(scan.allow_payload_testing),
+                    "allow_rate_limit_testing": bool(scan.allow_rate_limit_testing),
+                    "enable_destructive_tests": bool(scan.enable_destructive_tests),
+                    "destructive_test_policy": scan.destructive_test_policy or dashboard_options.get("destructive_test_policy"),
+                    "destructive_method_policy": scan.destructive_method_policy or dashboard_options.get("destructive_method_policy"),
+                }
+            )
+            try:
+                dashboard_options = normalize_scan_config(dashboard_options)
+            except ValueError as exc:
+                scan.status = ScanStatus.FAILED_PRECHECK.value
+                scan.completed_at = datetime.now(timezone.utc)
+                emit_progress(
+                    session,
+                    scan,
+                    str(exc),
+                    level="ERROR",
+                    phase="precheck",
+                    agent="orchestrator_agent",
+                    event_type="invalid_scan_config",
+                    context={"scan_config": dashboard_options},
+                    console=console,
+                    live=True,
+                )
+                emit_progress(
+                    session,
+                    scan,
+                    "scan start failed",
+                    level="ERROR",
+                    phase="precheck",
+                    agent="orchestrator_agent",
+                    event_type="scan_start_failed",
+                    context={"reason": str(exc)},
+                    console=console,
+                    live=True,
+                )
+                _mark_scan_worker_completed(scan.id, status="failed", exit_code=1)
+                raise typer.Exit(code=1)
+            scan.scan_config = dashboard_options
             seed_foundation(session, "api-security" if scan.profile == "auto" else scan.profile)
             emit_progress(session, scan, "precheck started", phase="precheck", agent="orchestrator_agent", event_type="precheck_started", console=console, live=True)
             run_doctor(target, console=console)
             emit_progress(session, scan, "precheck completed", phase="precheck", agent="orchestrator_agent", event_type="precheck_completed", console=console, live=True)
+            workflow_phases = _expanded_workflow_phases(dashboard_options)
+            emit_progress(
+                session,
+                scan,
+                "workflow expanded",
+                phase="precheck",
+                agent="orchestrator_agent",
+                event_type="workflow_expanded",
+                context={"execution_profile": dashboard_options.get("execution_profile"), "phases": workflow_phases},
+                console=console,
+                live=True,
+            )
+            if workflow_phases:
+                emit_progress(
+                    session,
+                    scan,
+                    f"first phase queued: {workflow_phases[0]}",
+                    phase=workflow_phases[0],
+                    agent="orchestrator_agent",
+                    event_type="phase_started",
+                    context={"phase": workflow_phases[0]},
+                    console=console,
+                    live=True,
+                )
             prompt = _scan_start_prompt(
                 target,
                 scan.profile or "auto",
@@ -595,12 +666,40 @@ def _mark_scan_worker_failed(scan_id: int, message: str) -> None:
             if scan:
                 scan.status = ScanStatus.FAILED_SYSTEM.value
                 scan.completed_at = datetime.now(timezone.utc)
+                phase = scan.current_phase or "worker"
+                if phase in {"created", "precheck", "ai_planning", "worker"}:
+                    emit_progress(
+                        session,
+                        scan,
+                        message[:900],
+                        level="ERROR",
+                        phase=phase,
+                        agent=scan.current_agent or "orchestrator_agent",
+                        tool=scan.current_tool,
+                        event_type="workflow_build_failed",
+                        context={"error": message[:2000]},
+                        console=console,
+                        live=True,
+                    )
+                    emit_progress(
+                        session,
+                        scan,
+                        "scan start failed",
+                        level="ERROR",
+                        phase=phase,
+                        agent=scan.current_agent or "orchestrator_agent",
+                        tool=scan.current_tool,
+                        event_type="scan_start_failed",
+                        context={"reason": message[:2000]},
+                        console=console,
+                        live=True,
+                    )
                 emit_progress(
                     session,
                     scan,
                     message[:900],
                     level="ERROR",
-                    phase=scan.current_phase or "worker",
+                    phase=phase,
                     agent=scan.current_agent,
                     tool=scan.current_tool,
                     event_type="scan_failed",
@@ -621,7 +720,7 @@ def _mark_scan_worker_failed(scan_id: int, message: str) -> None:
         pass
 
 
-def _mark_scan_worker_completed(scan_id: int) -> None:
+def _mark_scan_worker_completed(scan_id: int, *, status: str = "completed", exit_code: int = 0) -> None:
     try:
         with session_scope() as session:
             process = session.scalar(
@@ -630,9 +729,9 @@ def _mark_scan_worker_completed(scan_id: int) -> None:
                 .order_by(ScanProcess.id.desc())
             )
             if process:
-                process.status = "completed"
+                process.status = status
                 process.ended_at = datetime.now(timezone.utc)
-                process.exit_code = 0
+                process.exit_code = exit_code
     except Exception:
         pass
 
@@ -643,6 +742,39 @@ def _load_scan_or_exit(session, scan_id: int) -> Scan:
         console.print(f"ERROR: scan {scan_id} was not found.")
         raise typer.Exit(code=1)
     return scan
+
+
+def _expanded_workflow_phases(scan_config: dict) -> list[str]:
+    if scan_config.get("execution_profile") == "destructive-full-scan":
+        return [
+            "account_provisioning",
+            "login_session_user1",
+            "login_session_user2",
+            "session_validation",
+            "authenticated_crawling",
+            "authorization_matrix",
+            "bola_idor_testing",
+            "bfla_testing",
+            "xss_testing",
+            "sqli_testing",
+            "command_injection_testing",
+            "rate_limit_testing",
+            "business_logic_testing",
+            "report_generation",
+        ]
+    if scan_config.get("full") or scan_config.get("allow_authenticated_testing"):
+        return [
+            "api_discovery",
+            "auth_mapping",
+            "login_session",
+            "session_validation",
+            "authenticated_crawling",
+            "authorization_testing",
+            "input_validation_testing",
+            "business_logic_testing",
+            "report_generation",
+        ]
+    return ["enumeration", "api_discovery", "report_generation"]
 
 
 def _scan_start_prompt(

@@ -124,6 +124,7 @@ document.querySelectorAll('[data-start-scan]').forEach(form => {
   const submit = form.querySelector('button[type="submit"]');
   const message = form.querySelector('[data-form-message]');
   const updateStartState = () => {
+    syncExecutionProfile(form);
     updateEffectiveConfig(form);
     const data = new FormData(form);
     let reason = '';
@@ -270,6 +271,25 @@ function updateEffectiveConfig(form) {
   set('allow_payload_testing', boolText(form.elements.allow_payload_testing?.checked));
   set('allow_rate_limit_testing', boolText(form.elements.allow_rate_limit_testing?.checked));
   set('enable_destructive_tests', boolText(form.elements.enable_destructive_tests?.checked));
+}
+
+function syncExecutionProfile(form) {
+  const hidden = form.elements.execution_profile;
+  if (!hidden) return;
+  const destructivePolicy = form.elements.destructive_test_policy?.value || '';
+  if (destructivePolicy === 'lab_full_allowed' || form.elements.enable_destructive_tests?.checked) {
+    hidden.value = 'destructive-full-scan';
+  } else if (
+    form.elements.full?.checked ||
+    form.elements.allow_authenticated_testing?.checked ||
+    form.elements.allow_authorization_testing?.checked ||
+    form.elements.allow_payload_testing?.checked ||
+    form.elements.allow_rate_limit_testing?.checked
+  ) {
+    hidden.value = 'full-authorized-scan';
+  } else {
+    hidden.value = 'discovery_only';
+  }
 }
 
 function boolText(value) {

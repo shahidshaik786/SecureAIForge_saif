@@ -178,6 +178,29 @@ class DashboardApiTests(unittest.TestCase):
         self.assertTrue(captured["allow_test_owned_object_creation"])
         self.assertTrue(captured["enable_destructive_tests"])
 
+    def test_scan_start_rejects_discovery_only_with_full_testing(self) -> None:
+        response = self.client.post(
+            "/api/scans/start",
+            json={
+                "target": "http://example.test",
+                "profile": "auto",
+                "engagement_mode": "gray-box",
+                "execution_profile": "discovery_only",
+                "destructive_test_policy": "lab_full_allowed",
+                "full": True,
+                "allow_authenticated_testing": True,
+                "allow_authorization_testing": True,
+                "allow_payload_testing": True,
+                "allow_rate_limit_testing": True,
+                "enable_destructive_tests": True,
+                "confirm_authorized": True,
+                "confirm_destructive_testing": True,
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["status"], "invalid_scan_config")
+        self.assertIn("discovery_only cannot be used", response.json()["message"])
+
     def test_scan_start_requires_authorization_confirmation(self) -> None:
         response = self.client.post("/api/scans/start", json={"target": "http://example.test", "profile": "auto", "mode": "black-box"})
         self.assertEqual(response.status_code, 400)

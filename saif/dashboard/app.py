@@ -19,6 +19,7 @@ from saif.dashboard import services
 from saif.db import session_scope
 from saif.db.models import Finding, Scan, ScanProcess, ScanStatus
 from saif.services.progress import emit_progress
+from saif.services.scan_config import normalize_scan_config
 from saif.services.targets import upsert_project_target
 
 
@@ -185,8 +186,34 @@ def _create_dashboard_scan(payload: dict) -> dict:
         raise ValueError("target is required")
     profile = str(payload.get("profile") or "auto")
     engagement_mode = str(payload.get("engagement_mode") or payload.get("mode") or "black-box").replace("-", "_")
-    execution_profile = str(payload.get("execution_profile") or "discovery_only")
     destructive_policy = str(payload.get("destructive_test_policy") or payload.get("destructive_policy") or "detect_only")
+    scan_options = normalize_scan_config(
+        {
+            "target": target,
+            "profile": profile,
+            "application_profile": profile,
+            "engagement_mode": engagement_mode,
+            "full": bool(payload.get("full")),
+            "enumeration_only": bool(payload.get("enumeration_only")),
+            "debug": bool(payload.get("debug", True)),
+            "execution_profile": payload.get("execution_profile"),
+            "auth_mode": payload.get("auth_mode") or "auto",
+            "credentials_path": payload.get("credentials_path"),
+            "source_path": payload.get("source_path"),
+            "allow_account_generation": bool(payload.get("allow_account_generation")),
+            "allow_authenticated_testing": bool(payload.get("allow_authenticated_testing")),
+            "allow_authorization_testing": bool(payload.get("allow_authorization_testing")),
+            "allow_payload_testing": bool(payload.get("allow_payload_testing")),
+            "allow_rate_limit_testing": bool(payload.get("allow_rate_limit_testing")),
+            "allow_test_owned_object_creation": bool(payload.get("allow_test_owned_object_creation")),
+            "enable_destructive_tests": bool(payload.get("enable_destructive_tests")),
+            "destructive_method_policy": payload.get("destructive_method_policy"),
+            "destructive_test_policy": destructive_policy,
+            "confirm_authorized": bool(payload.get("confirm_authorized")),
+            "confirm_destructive_testing": bool(payload.get("confirm_destructive_testing")),
+            "selected_test_categories": payload.get("selected_test_categories") or [],
+        }
+    )
     now = datetime.now(timezone.utc)
     with session_scope() as session:
         project_name = str(payload.get("project") or _dashboard_project_name(target, profile))
@@ -199,30 +226,7 @@ def _create_dashboard_scan(payload: dict) -> dict:
             engagement_mode=engagement_mode,
             credentials_path=payload.get("credentials_path"),
             source_path=payload.get("source_path"),
-            scan_config={
-                "target": target,
-                "profile": profile,
-                "engagement_mode": engagement_mode,
-                "full": bool(payload.get("full")),
-                "enumeration_only": bool(payload.get("enumeration_only")),
-                "debug": bool(payload.get("debug", True)),
-                "execution_profile": execution_profile,
-                "auth_mode": payload.get("auth_mode") or "auto",
-                "credentials_path": payload.get("credentials_path"),
-                "source_path": payload.get("source_path"),
-                "allow_account_generation": bool(payload.get("allow_account_generation")),
-                "allow_authenticated_testing": bool(payload.get("allow_authenticated_testing")),
-                "allow_authorization_testing": bool(payload.get("allow_authorization_testing")),
-                "allow_payload_testing": bool(payload.get("allow_payload_testing")),
-                "allow_rate_limit_testing": bool(payload.get("allow_rate_limit_testing")),
-                "allow_test_owned_object_creation": bool(payload.get("allow_test_owned_object_creation")),
-                "enable_destructive_tests": bool(payload.get("enable_destructive_tests")),
-                "destructive_method_policy": payload.get("destructive_method_policy"),
-                "destructive_test_policy": destructive_policy,
-                "confirm_authorized": bool(payload.get("confirm_authorized")),
-                "confirm_destructive_testing": bool(payload.get("confirm_destructive_testing")),
-                "selected_test_categories": payload.get("selected_test_categories") or [],
-            },
+            scan_config=scan_options,
             auth_mode=payload.get("auth_mode") or "auto",
             destructive_method_policy=payload.get("destructive_method_policy"),
             enable_destructive_tests=bool(payload.get("enable_destructive_tests")),
@@ -255,7 +259,7 @@ def _create_dashboard_scan(payload: dict) -> dict:
                 "engagement_mode": engagement_mode,
                 "full": bool(payload.get("full")),
                 "enumeration_only": bool(payload.get("enumeration_only")),
-                "execution_profile": execution_profile,
+                "execution_profile": scan_options["execution_profile"],
                 "destructive_test_policy": destructive_policy,
                 "enable_destructive_tests": bool(payload.get("enable_destructive_tests")),
                 "allow_account_generation": bool(payload.get("allow_account_generation")),
@@ -479,6 +483,16 @@ def add_api_routes(app: FastAPI) -> None:
             return api_response({"ok": False, "error": "Authorization confirmation is required before starting a scan."}, status_code=400)
         if payload.get("enable_destructive_tests") and not payload.get("confirm_destructive_testing"):
             return api_response({"ok": False, "error": "Destructive testing acknowledgement is required before enabling destructive tests."}, status_code=400)
+        try:
+            normalize_scan_config(
+                {
+                    **payload,
+                    "engagement_mode": payload.get("engagement_mode") or payload.get("mode") or "black-box",
+                    "destructive_test_policy": payload.get("destructive_test_policy") or payload.get("destructive_policy") or "detect_only",
+                }
+            )
+        except ValueError as exc:
+            return api_response({"ok": False, "status": "invalid_scan_config", "message": str(exc)}, status_code=400)
         try:
             created = _create_dashboard_scan(payload)
         except ValueError as exc:
