@@ -130,6 +130,54 @@ class DashboardApiTests(unittest.TestCase):
         self.assertIn("run-existing", captured["command"])
         self.assertIn("22", captured["command"])
 
+    def test_scan_start_preserves_destructive_full_scan_payload(self) -> None:
+        captured = {}
+
+        def fake_create(payload):
+            captured.update(payload)
+            return {"scan_id": 22, "project": "saif-dashboard-test", "target": payload["target"]}
+
+        dashboard_app._create_dashboard_scan = fake_create
+        dashboard_app._start_background_command = lambda command, *, scan_id=None, log_path=None: {"ok": True, "scan_id": scan_id, "pid": 4321, "status": "started"}
+        client = TestClient(dashboard_app.create_app())
+        response = client.post(
+            "/api/scans/start",
+            json={
+                "target": "http://example.test",
+                "profile": "auto",
+                "engagement_mode": "gray-box",
+                "auth_mode": "auto",
+                "execution_profile": "destructive-full-scan",
+                "destructive_method_policy": "lab_full_allowed",
+                "destructive_test_policy": "lab_full_allowed",
+                "full": True,
+                "allow_account_generation": True,
+                "allow_authenticated_testing": True,
+                "allow_authorization_testing": True,
+                "allow_payload_testing": True,
+                "allow_rate_limit_testing": True,
+                "allow_test_owned_object_creation": True,
+                "enable_destructive_tests": True,
+                "confirm_authorized": True,
+                "confirm_destructive_testing": True,
+            },
+        )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(captured["profile"], "auto")
+        self.assertEqual(captured["engagement_mode"], "gray-box")
+        self.assertEqual(captured["auth_mode"], "auto")
+        self.assertEqual(captured["execution_profile"], "destructive-full-scan")
+        self.assertEqual(captured["destructive_method_policy"], "lab_full_allowed")
+        self.assertEqual(captured["destructive_test_policy"], "lab_full_allowed")
+        self.assertTrue(captured["full"])
+        self.assertTrue(captured["allow_account_generation"])
+        self.assertTrue(captured["allow_authenticated_testing"])
+        self.assertTrue(captured["allow_authorization_testing"])
+        self.assertTrue(captured["allow_payload_testing"])
+        self.assertTrue(captured["allow_rate_limit_testing"])
+        self.assertTrue(captured["allow_test_owned_object_creation"])
+        self.assertTrue(captured["enable_destructive_tests"])
+
     def test_scan_start_requires_authorization_confirmation(self) -> None:
         response = self.client.post("/api/scans/start", json={"target": "http://example.test", "profile": "auto", "mode": "black-box"})
         self.assertEqual(response.status_code, 400)

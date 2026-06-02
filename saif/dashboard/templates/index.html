@@ -88,8 +88,9 @@
       <label>Application Profile<select name="profile"><option value="auto">auto-detect</option><option value="crapi">crAPI application profile</option><option value="generic-rest">generic REST API</option><option value="web-api">web/API generic</option></select></label>
       <label>Engagement Mode<select name="mode"><option value="black-box">black-box</option><option value="gray-box">gray-box</option><option value="white-box">white-box</option></select></label>
       <label>Auth Mode<select name="auth_mode"><option value="auto">auto</option><option value="username_password">username_password</option><option value="bearer_token">bearer_token</option><option value="api_key">api_key</option><option value="cookie_session">cookie_session</option><option value="manual_session_import">manual_session_import</option><option value="sso_manual_assisted">sso_manual_assisted</option></select></label>
-      <label>Destructive Method Policy<select name="destructive_method_policy"><option value="no_destructive_methods">Do not execute destructive methods</option><option value="detect_only">Detect destructive methods only</option><option value="test_owned_only" selected>Execute only on test-owned resources</option><option value="manual_confirmation">Require manual confirmation before destructive action</option></select></label>
+      <label>Destructive Method Policy<select name="destructive_method_policy"><option value="no_destructive_methods">Do not execute destructive methods</option><option value="detect_only">Detect destructive methods only</option><option value="test_owned_only" selected>Execute only on test-owned resources</option><option value="manual_confirmation">Require manual confirmation before destructive action</option><option value="lab_full_allowed">Lab full allowed</option></select></label>
       <label>Execution Profile<select name="destructive_test_policy"><option value="disabled">No Destructive Test Cases</option><option value="detect_only" selected>Discovery / Detect Only</option><option value="test_owned_only">Test-Owned Object Validation</option><option value="manual_confirmation">Manual Confirmation Required</option><option value="lab_full_allowed">Destructive Test Cases - Full Authorized Scan</option></select></label>
+      <input name="execution_profile" type="hidden" value="discovery_only">
       <div class="warning-box" data-destructive-warning>Destructive test cases can create, modify, or delete test data. Use this only for approved lab/testing environments and test-owned resources.</div>
       <label>Credentials file path<input name="credentials_path" placeholder="configs/credentials.yaml"></label>
       <label data-source-path>Source path<input name="source_path" placeholder="/path/to/source"></label>
@@ -111,6 +112,23 @@
       </div>
       <label class="confirm"><input name="confirm" type="checkbox" required> I confirm this target is in scope and authorized for testing.</label>
       <label class="confirm"><input name="confirm_destructive_testing" type="checkbox"> I understand destructive tests may create, modify, or delete test data.</label>
+      <div class="effective-config" data-effective-config>
+        <div class="panel-title"><h3>Effective Scan Configuration</h3><span class="muted">submitted with Start Scan</span></div>
+        <div class="settings-grid">
+          <div class="detail-item"><span>Execution Profile</span><strong data-effective="execution_profile">Discovery / Detect Only</strong></div>
+          <div class="detail-item"><span>Application Profile</span><strong data-effective="application_profile">auto-detect</strong></div>
+          <div class="detail-item"><span>Engagement Mode</span><strong data-effective="engagement_mode">black-box</strong></div>
+          <div class="detail-item"><span>Destructive Policy</span><strong data-effective="destructive_policy">Execute only on test-owned resources</strong></div>
+          <div class="detail-item"><span>Full Workflow</span><strong data-effective="full_workflow">false</strong></div>
+          <div class="detail-item"><span>Select all applicable</span><strong data-effective="select_all_applicable">false</strong></div>
+          <div class="detail-item"><span>Selected test categories count</span><strong data-effective="selected_test_categories_count">0</strong></div>
+          <div class="detail-item"><span>Authenticated testing</span><strong data-effective="allow_authenticated_testing">false</strong></div>
+          <div class="detail-item"><span>Authorization testing</span><strong data-effective="allow_authorization_testing">false</strong></div>
+          <div class="detail-item"><span>Payload testing</span><strong data-effective="allow_payload_testing">false</strong></div>
+          <div class="detail-item"><span>Rate limit testing</span><strong data-effective="allow_rate_limit_testing">false</strong></div>
+          <div class="detail-item"><span>Destructive testing</span><strong data-effective="enable_destructive_tests">false</strong></div>
+        </div>
+      </div>
       <button class="primary success" type="submit">Start Scan</button>
       <p class="form-message" data-form-message></p>
     </form>

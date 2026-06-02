@@ -124,6 +124,7 @@ document.querySelectorAll('[data-start-scan]').forEach(form => {
   const submit = form.querySelector('button[type="submit"]');
   const message = form.querySelector('[data-form-message]');
   const updateStartState = () => {
+    updateEffectiveConfig(form);
     const data = new FormData(form);
     let reason = '';
     if (!data.get('target')) reason = 'Target URL is required.';
@@ -163,6 +164,7 @@ document.querySelectorAll('[data-start-scan]').forEach(form => {
       allow_authorization_testing: Boolean(data.get('allow_authorization_testing')),
       allow_payload_testing: Boolean(data.get('allow_payload_testing')),
       allow_rate_limit_testing: Boolean(data.get('allow_rate_limit_testing')),
+      execution_profile: data.get('execution_profile') || data.get('destructive_test_policy') || 'detect_only',
       destructive_method_policy: data.get('destructive_method_policy') || 'no_destructive_methods',
       destructive_test_policy: data.get('destructive_test_policy') || 'detect_only',
       enable_destructive_tests: Boolean(data.get('enable_destructive_tests')),
@@ -195,32 +197,40 @@ document.querySelectorAll('[data-preset]').forEach(button => {
     const form = document.querySelector('[data-start-scan]');
     if (!form) return;
     const preset = button.dataset.preset;
+    const isFullAuthorized = preset === 'full-authorized';
     if (preset === 'crapi-app') form.elements.profile.value = 'crapi';
-    if (preset === 'default' || preset === 'enumeration-only' || preset === 'gray-box') form.elements.profile.value = 'auto';
-    form.elements.mode.value = preset === 'gray-box' ? 'gray-box' : 'black-box';
-    if (preset === 'full-authorized') form.elements.mode.value = 'gray-box';
+    if (preset === 'default' || preset === 'enumeration-only' || preset === 'gray-box' || isFullAuthorized) form.elements.profile.value = 'auto';
+    form.elements.mode.value = preset === 'gray-box' || isFullAuthorized ? 'gray-box' : 'black-box';
+    form.elements.auth_mode.value = 'auto';
+    form.elements.execution_profile.value = isFullAuthorized ? 'destructive-full-scan' : (preset === 'gray-box' ? 'test-owned-validation' : 'discovery_only');
     form.elements.full.checked = preset === 'full-authorized' || preset === 'gray-box';
     form.elements.enumeration_only.checked = preset === 'enumeration-only';
-    form.elements.destructive_method_policy.value = preset === 'default' || preset === 'enumeration-only' ? 'detect_only' : 'test_owned_only';
-    form.elements.destructive_test_policy.value = preset === 'full-authorized' ? 'lab_full_allowed' : (preset === 'gray-box' ? 'test_owned_only' : 'detect_only');
-    form.elements.enable_destructive_tests.checked = preset === 'full-authorized';
-    form.elements.allow_test_owned_object_creation.checked = preset === 'full-authorized';
+    form.elements.destructive_method_policy.value = isFullAuthorized ? 'lab_full_allowed' : (preset === 'default' || preset === 'enumeration-only' ? 'detect_only' : 'test_owned_only');
+    form.elements.destructive_test_policy.value = isFullAuthorized ? 'lab_full_allowed' : (preset === 'gray-box' ? 'test_owned_only' : 'detect_only');
+    form.elements.enable_destructive_tests.checked = isFullAuthorized;
+    form.elements.allow_test_owned_object_creation.checked = isFullAuthorized;
     form.elements.confirm_destructive_testing.checked = false;
-    form.elements.allow_account_generation.checked = preset === 'full-authorized';
-    form.elements.allow_authenticated_testing.checked = preset === 'full-authorized' || preset === 'gray-box';
+    form.elements.allow_account_generation.checked = isFullAuthorized;
+    form.elements.allow_authenticated_testing.checked = isFullAuthorized || preset === 'gray-box';
     form.elements.allow_authorization_testing.checked = form.elements.allow_authenticated_testing.checked;
-    form.elements.allow_payload_testing.checked = preset === 'full-authorized' || preset === 'gray-box';
-    form.elements.allow_rate_limit_testing.checked = false;
-    selectCategories(preset === 'enumeration-only' ? ['recon','api_discovery','method_discovery','security_headers','error_handling'] : recommendedCategories());
+    form.elements.allow_payload_testing.checked = isFullAuthorized || preset === 'gray-box';
+    form.elements.allow_rate_limit_testing.checked = isFullAuthorized;
+    selectCategories(
+      isFullAuthorized ? allCategories(form) : (preset === 'enumeration-only' ? ['recon','api_discovery','method_discovery','security_headers','error_handling'] : recommendedCategories()),
+      form,
+    );
+    form.dispatchEvent(new Event('change', { bubbles: true }));
   });
 });
 
 document.querySelectorAll('[data-select-categories]').forEach(button => {
   button.addEventListener('click', () => {
+    const form = button.closest('form') || document;
     const mode = button.dataset.selectCategories;
-    if (mode === 'clear') selectCategories([]);
-    if (mode === 'all') selectCategories([...document.querySelectorAll('input[name="selected_test_categories"]')].map(item => item.value));
-    if (mode === 'recommended') selectCategories(recommendedCategories());
+    if (mode === 'clear') selectCategories([], form);
+    if (mode === 'all') selectCategories(allCategories(form), form);
+    if (mode === 'recommended') selectCategories(recommendedCategories(), form);
+    if (form.dispatchEvent) form.dispatchEvent(new Event('change', { bubbles: true }));
   });
 });
 
@@ -228,11 +238,46 @@ function recommendedCategories() {
   return ['recon','api_discovery','method_discovery','security_headers','error_handling','auth_testing','session_management','jwt_testing','authorization_matrix','bola_idor','bfla','mass_assignment','xss','sqli','ssrf','business_logic'];
 }
 
-function selectCategories(values) {
+function allCategories(root = document) {
+  return [...root.querySelectorAll('input[name="selected_test_categories"]')].map(item => item.value);
+}
+
+function selectCategories(values, root = document) {
   const selected = new Set(values);
-  document.querySelectorAll('input[name="selected_test_categories"]').forEach(input => {
+  root.querySelectorAll('input[name="selected_test_categories"]').forEach(input => {
     input.checked = selected.has(input.value);
   });
+}
+
+function updateEffectiveConfig(form) {
+  const root = form.querySelector('[data-effective-config]');
+  if (!root) return;
+  const selectedCount = form.querySelectorAll('input[name="selected_test_categories"]:checked').length;
+  const totalCount = form.querySelectorAll('input[name="selected_test_categories"]').length;
+  const set = (key, value) => {
+    const node = root.querySelector(`[data-effective="${key}"]`);
+    if (node) node.textContent = value;
+  };
+  set('execution_profile', selectLabel(form.elements.destructive_test_policy));
+  set('application_profile', selectLabel(form.elements.profile));
+  set('engagement_mode', form.elements.mode?.value || 'black-box');
+  set('destructive_policy', selectLabel(form.elements.destructive_method_policy));
+  set('full_workflow', boolText(form.elements.full?.checked));
+  set('select_all_applicable', boolText(totalCount > 0 && selectedCount === totalCount));
+  set('selected_test_categories_count', String(selectedCount));
+  set('allow_authenticated_testing', boolText(form.elements.allow_authenticated_testing?.checked));
+  set('allow_authorization_testing', boolText(form.elements.allow_authorization_testing?.checked));
+  set('allow_payload_testing', boolText(form.elements.allow_payload_testing?.checked));
+  set('allow_rate_limit_testing', boolText(form.elements.allow_rate_limit_testing?.checked));
+  set('enable_destructive_tests', boolText(form.elements.enable_destructive_tests?.checked));
+}
+
+function boolText(value) {
+  return value ? 'true' : 'false';
+}
+
+function selectLabel(select) {
+  return select?.selectedOptions?.[0]?.textContent?.trim() || select?.value || '';
 }
 
 const livePanel = document.querySelector('.live-panel');

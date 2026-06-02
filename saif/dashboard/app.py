@@ -185,6 +185,7 @@ def _create_dashboard_scan(payload: dict) -> dict:
         raise ValueError("target is required")
     profile = str(payload.get("profile") or "auto")
     engagement_mode = str(payload.get("engagement_mode") or payload.get("mode") or "black-box").replace("-", "_")
+    execution_profile = str(payload.get("execution_profile") or "discovery_only")
     destructive_policy = str(payload.get("destructive_test_policy") or payload.get("destructive_policy") or "detect_only")
     now = datetime.now(timezone.utc)
     with session_scope() as session:
@@ -205,6 +206,7 @@ def _create_dashboard_scan(payload: dict) -> dict:
                 "full": bool(payload.get("full")),
                 "enumeration_only": bool(payload.get("enumeration_only")),
                 "debug": bool(payload.get("debug", True)),
+                "execution_profile": execution_profile,
                 "auth_mode": payload.get("auth_mode") or "auto",
                 "credentials_path": payload.get("credentials_path"),
                 "source_path": payload.get("source_path"),
@@ -253,6 +255,7 @@ def _create_dashboard_scan(payload: dict) -> dict:
                 "engagement_mode": engagement_mode,
                 "full": bool(payload.get("full")),
                 "enumeration_only": bool(payload.get("enumeration_only")),
+                "execution_profile": execution_profile,
                 "destructive_test_policy": destructive_policy,
                 "enable_destructive_tests": bool(payload.get("enable_destructive_tests")),
                 "allow_account_generation": bool(payload.get("allow_account_generation")),

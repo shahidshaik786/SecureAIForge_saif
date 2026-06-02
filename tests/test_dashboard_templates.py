@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
@@ -178,8 +179,23 @@ class DashboardTemplateTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Application Profile", response.text)
         self.assertIn("Execution Profile", response.text)
+        self.assertIn("Effective Scan Configuration", response.text)
+        self.assertIn("Lab full allowed", response.text)
         self.assertIn("Destructive Test Cases - Full Authorized Scan", response.text)
         self.assertNotIn("crAPI Full Test", response.text)
+
+    def test_destructive_full_preset_sets_effective_scan_payload(self) -> None:
+        script_path = Path(dashboard_app.STATIC_DIR) / "dashboard.js"
+        script = script_path.read_text(encoding="utf-8")
+        self.assertIn("execution_profile: data.get('execution_profile')", script)
+        self.assertIn("form.elements.profile.value = 'auto'", script)
+        self.assertIn("form.elements.mode.value = preset === 'gray-box' || isFullAuthorized ? 'gray-box' : 'black-box'", script)
+        self.assertIn("form.elements.auth_mode.value = 'auto'", script)
+        self.assertIn("form.elements.execution_profile.value = isFullAuthorized ? 'destructive-full-scan'", script)
+        self.assertIn("form.elements.destructive_method_policy.value = isFullAuthorized ? 'lab_full_allowed'", script)
+        self.assertIn("form.elements.destructive_test_policy.value = isFullAuthorized ? 'lab_full_allowed'", script)
+        self.assertIn("form.elements.allow_rate_limit_testing.checked = isFullAuthorized", script)
+        self.assertIn("selectCategories(", script)
 
     def test_live_latest_prefers_latest_running_scan(self) -> None:
         dashboard_app.services.scans = lambda session: [

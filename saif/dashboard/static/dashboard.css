@@ -216,6 +216,16 @@ legend { color: var(--muted); padding: 0 6px; }
 .test-category-box fieldset { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px 12px; }
 .test-category-box label { display: flex; align-items: center; gap: 8px; }
 .test-category-box input { width: auto; }
+.effective-config {
+  border: 1px solid rgba(56, 189, 248, .24);
+  background: rgba(2, 6, 23, .34);
+  border-radius: 8px;
+  padding: 12px;
+}
+.effective-config .detail-item {
+  background: rgba(15, 23, 42, .7);
+  box-shadow: none;
+}
 
 .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 16px; }
 .tabs a { color: #bae6fd; text-decoration: none; border: 1px solid rgba(56, 189, 248, .35); border-radius: 8px; padding: 7px 10px; background: rgba(56, 189, 248, .08); }
