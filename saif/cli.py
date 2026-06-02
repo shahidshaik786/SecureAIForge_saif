@@ -575,6 +575,7 @@ def scan_run_existing(
                 json_path=json_path,
                 html_path=html_path,
             )
+            _mark_scan_worker_completed(scan.id)
     except ProgrammingError as exc:
         _handle_db_programming_error(exc)
     except SQLAlchemyError as exc:
@@ -616,6 +617,22 @@ def _mark_scan_worker_failed(scan_id: int, message: str) -> None:
                 process.status = "failed"
                 process.ended_at = datetime.now(timezone.utc)
                 process.exit_code = 1
+    except Exception:
+        pass
+
+
+def _mark_scan_worker_completed(scan_id: int) -> None:
+    try:
+        with session_scope() as session:
+            process = session.scalar(
+                select(ScanProcess)
+                .where(ScanProcess.scan_id == scan_id, ScanProcess.pid == os.getpid())
+                .order_by(ScanProcess.id.desc())
+            )
+            if process:
+                process.status = "completed"
+                process.ended_at = datetime.now(timezone.utc)
+                process.exit_code = 0
     except Exception:
         pass
 

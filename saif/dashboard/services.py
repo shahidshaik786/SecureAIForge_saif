@@ -353,8 +353,7 @@ def overview(session: Session) -> dict:
     statuses = sorted({finding.status for finding in findings})
     severity_counts = {severity: len([finding for finding in findings if finding.severity == severity]) for severity in severities}
     status_counts = {status: len([finding for finding in findings if finding.status == status]) for status in statuses}
-    active_statuses = {"created", "planning", "ready", "running", "resuming", "stopping"}
-    active_scan_count = len([scan for scan in scans if str(scan.status or "").lower() in active_statuses])
+    active_scan_count = len([scan for scan in scans if _is_fresh_active_scan(session, scan)])
     readiness_counts = {}
     for scan in scans:
         status = production_readiness_for_scan(session, scan).get("status")
@@ -380,7 +379,16 @@ def overview(session: Session) -> dict:
         "top_affected_targets": top_targets(session),
         "latest_scan_id": latest_scan_id(session),
         "latest_active_scan_id": latest_active_scan_id(session),
-    }
+}
+
+
+def _is_fresh_active_scan(session: Session, scan: Scan) -> bool:
+    try:
+        snapshot = status_snapshot(session, scan.id)
+        status = str(snapshot.get("status") or "").lower()
+    except Exception:
+        status = str(scan.status or "").lower()
+    return status in {"created", "planning", "running", "resuming", "stopping"}
 
 
 def latest_scan_id(session: Session) -> int | None:

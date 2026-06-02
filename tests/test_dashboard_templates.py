@@ -105,6 +105,49 @@ class DashboardTemplateTests(unittest.TestCase):
             self.assertIn(key, overview)
         self.assertEqual(overview["severity_counts"], {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0})
 
+    def test_overview_running_count_excludes_ready_completed_and_stale_scans(self) -> None:
+        original_status_snapshot = dashboard_services.status_snapshot
+        original_readiness = dashboard_services.production_readiness_for_scan
+
+        scans = [
+            SimpleNamespace(id=1, status="completed"),
+            SimpleNamespace(id=2, status="ready"),
+            SimpleNamespace(id=3, status="resuming"),
+            SimpleNamespace(id=4, status="running"),
+        ]
+
+        class Result:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def all(self):
+                return self.rows
+
+            def first(self):
+                return self.rows[0] if self.rows else None
+
+        class FakeSession:
+            def scalars(self, statement):
+                text = str(statement)
+                return Result(scans if "scans" in text else [])
+
+            def scalar(self, statement):
+                return 0
+
+        try:
+            dashboard_services.status_snapshot = lambda session, scan_id: {
+                1: {"status": "completed"},
+                2: {"status": "ready"},
+                3: {"status": "worker_stale"},
+                4: {"status": "running"},
+            }[scan_id]
+            dashboard_services.production_readiness_for_scan = lambda session, scan: {"status": "manual_review_required"}
+            overview = dashboard_services.overview(FakeSession())
+            self.assertEqual(overview["running_scans"], 1)
+        finally:
+            dashboard_services.status_snapshot = original_status_snapshot
+            dashboard_services.production_readiness_for_scan = original_readiness
+
     def test_dashboard_template_loader_uses_directory_string(self) -> None:
         dashboard_app.validate_dashboard_assets()
         searchpath = dashboard_app.templates.env.loader.searchpath
