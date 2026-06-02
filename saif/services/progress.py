@@ -55,6 +55,7 @@ def emit_progress(
     session.add(Log(scan_id=scan.id, level=level.lower(), message=message, context={"event_type": event_type, **(context or {})}))
     _write_runtime_log(scan.id, now, level, phase or scan.current_phase, agent or scan.current_agent, tool or scan.current_tool, message, context or {})
     session.flush()
+    session.commit()
     if live and console:
         console.print(_format_live_line(scan.id, message, phase or scan.current_phase, agent or scan.current_agent, tool or scan.current_tool), highlight=False)
 
@@ -150,7 +151,12 @@ def status_snapshot(session: Session, scan_id: int) -> dict:
     stale = bool(seconds_since_activity is not None and scan.status in active_statuses and seconds_since_activity > stale_after)
     process = session.scalar(select(ScanProcess).where(ScanProcess.scan_id == scan_id).order_by(desc(ScanProcess.id)).limit(1))
     worker_status = process.status if process else None
-    display_status = "worker_stale" if stale and worker_status == "started" else "running_stale" if stale else scan.status
+    if stale and process and worker_status == "started":
+        process.status = "stale"
+        worker_status = "stale"
+        session.flush()
+        session.commit()
+    display_status = "worker_stale" if stale and worker_status in {"started", "stale"} else "running_stale" if stale else scan.status
     return {
         "scan_id": scan.id,
         "status": display_status,
