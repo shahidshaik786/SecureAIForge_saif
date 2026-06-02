@@ -39,7 +39,7 @@ def validate_dashboard_assets() -> None:
 
 def _template_response(request: Request, context: dict):
     page_titles = {
-        "overview": "Security AI Framework",
+        "overview": "SAIF - Secure AI Forge",
         "control": "Scan Control",
         "live": "Live Monitor",
         "scans": "Scans",
@@ -56,8 +56,8 @@ def _template_response(request: Request, context: dict):
         "settings": "Settings",
     }
     context = dict(context)
-    context.setdefault("page_title", page_titles.get(context.get("page"), "Security AI Framework"))
-    context.setdefault("page_subtitle", "Authorized testing command center for discovery, validation, evidence, reporting, and retesting.")
+    context.setdefault("page_title", page_titles.get(context.get("page"), "SAIF - Secure AI Forge"))
+    context.setdefault("page_subtitle", "AI-assisted authorized Web/API security testing, evidence, and reporting forge.")
     context.setdefault("ollama_model", get_settings().ollama_model)
     return templates.TemplateResponse(
         request=request,

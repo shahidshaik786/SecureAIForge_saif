@@ -158,7 +158,7 @@ class DashboardTemplateTests(unittest.TestCase):
     def test_dashboard_home_renders_without_template_signature_error(self) -> None:
         response = TestClient(dashboard_app.create_app()).get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Security AI Framework", response.text)
+        self.assertIn("SAIF - Secure AI Forge", response.text)
 
     def test_dashboard_home_renders_when_overview_optional_keys_missing(self) -> None:
         dashboard_app.services.overview = lambda session: {}

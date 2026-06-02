@@ -1,4 +1,4 @@
-# SAIF - Security AI Framework
+# SAIF - Secure AI Forge
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-dashboard-009688)
@@ -7,13 +7,15 @@
 ![Security](https://img.shields.io/badge/Security-authorized%20testing-red)
 ![Status](https://img.shields.io/badge/status-in%20development-yellow)
 
-AI-assisted authorized security testing framework for Web, API, authentication, authorization, evidence collection, and reporting.
+AI-assisted authorized Web/API security testing, evidence, and reporting forge.
 
 > SAIF is in development. Use only on authorized testing, staging, lab, or non-production environments. The tester is responsible for confirming scope, approval, and the impact of every test.
+>
+> Google also uses SAIF to refer to Secure AI Framework. This project uses SAIF as Secure AI Forge and is independent and not affiliated with Google.
 
 ## What Is SAIF?
 
-SAIF is a local dashboard-driven security testing platform. It combines deterministic Web/API discovery, tool orchestration, PostgreSQL-backed evidence storage, Ollama-assisted planning/review, and HTML/JSON reporting.
+SAIF - Secure AI Forge is a local dashboard-driven security testing platform. It combines deterministic Web/API discovery, tool orchestration, PostgreSQL-backed evidence storage, Ollama-assisted planning/review, and HTML/JSON reporting.
 
 SAIF is designed to support black-box and gray-box Web/API testing today. Source-assisted white-box workflows may be added later when useful.
 
@@ -84,8 +86,8 @@ SAIF stores tool runs, raw evidence, structured findings, AI call records, and c
 ## Installation
 
 ```bash
-git clone <repo-url>
-cd SecureAIFramework_saif
+git clone https://github.com/shahidshaik786/SecureAIForge_saif.git
+cd SecureAIForge_saif
 cp .env.example .env
 ./saif.sh setup
 ./saif.sh init-db

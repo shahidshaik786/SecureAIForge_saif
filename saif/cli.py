@@ -34,7 +34,7 @@ from saif.services.targets import resolve_target, upsert_project_target
 from saif.services.tool_manager import install_missing_supported_tools, print_tool_summary, refresh_tool_registry, tool_registry_snapshot
 import saif.services.prompt_runner as prompt_runner
 
-app = typer.Typer(help="SAIF - Security AI Framework")
+app = typer.Typer(help="SAIF - Secure AI Forge")
 db_app = typer.Typer(help="Database commands")
 tools_app = typer.Typer(help="Tool registry commands")
 project_app = typer.Typer(help="Project management commands")

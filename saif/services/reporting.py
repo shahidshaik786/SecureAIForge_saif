@@ -833,7 +833,7 @@ def generate_html_report(session: Session, project_name: str | None = None, scan
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>SAIF Report - {escape(project.name)}</title>
+  <title>SAIF - Secure AI Forge Report - {escape(project.name)}</title>
   <style>
     body {{ font-family: Arial, sans-serif; margin: 2rem; color: #18202a; }}
     h1, h2 {{ color: #101820; }}
@@ -845,7 +845,7 @@ def generate_html_report(session: Session, project_name: str | None = None, scan
   </style>
 </head>
 <body>
-  <h1>SAIF Report</h1>
+  <h1>SAIF - Secure AI Forge Report</h1>
   <h2>Cover Page</h2>
   <table><tbody>
     <tr><th>Assessment type</th><td>{escape(str(payload.get("assessment_type") or "Web/API penetration test"))}</td></tr>
@@ -875,7 +875,7 @@ def generate_html_report(session: Session, project_name: str | None = None, scan
   <h2>Scope</h2>
   <pre>{escape(json.dumps(payload.get("targets"), indent=2, sort_keys=True))}</pre>
   <h2>Methodology</h2>
-  <p>SAIF executed AI-planned Web/API discovery, profile detection, authentication/session mapping, authorization checks, adaptive payload validation, evidence capture, and report generation according to available prerequisites and selected tools.</p>
+  <p>SAIF - Secure AI Forge executed AI-planned Web/API discovery, profile detection, authentication/session mapping, authorization checks, adaptive payload validation, evidence capture, and report generation according to available prerequisites and selected tools.</p>
   <h2>Prompt Context</h2>
   <table>
     <tbody>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ page_title | default("Security AI Framework") }} - SAIF</title>
+  <title>{{ page_title | default("SAIF - Secure AI Forge") }}</title>
   <link rel="stylesheet" href="/static/dashboard.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
   <aside class="sidebar" id="sidebar">
     <div class="brand-block">
       <div class="brand">SAIF</div>
-      <div class="brand-subtitle">Secure AI Framework</div>
+      <div class="brand-subtitle">Secure AI Forge</div>
     </div>
     <nav class="nav">
       <a class="{{ 'active' if page == 'overview' else '' }}" href="/"><span>◇</span>Overview</a>
@@ -34,7 +34,7 @@
     <header class="topbar">
       <button class="menu-button" data-toggle-sidebar aria-label="Toggle navigation">☰</button>
       <div>
-        <h1>{{ page_title | default("Security AI Framework") }}</h1>
+        <h1>{{ page_title | default("SAIF - Secure AI Forge") }}</h1>
         <p>{{ page_subtitle | default("Authorized testing command center for discovery, validation, evidence, reporting, and retesting.") }}</p>
       </div>
       <div class="top-actions">
@@ -47,7 +47,7 @@
     </header>
     <div class="auth-banner">Use only on authorized testing/staging environments. Tester is responsible for confirming scope and approval.</div>
     {% block content %}{% endblock %}
-    <footer class="footer">SAIF local dashboard · PostgreSQL-backed command center</footer>
+    <footer class="footer">SAIF - Secure AI Forge local dashboard | PostgreSQL-backed command center | Independent and not affiliated with Google</footer>
   </main>
   <script src="/static/dashboard.js"></script>
 </body>

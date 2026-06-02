@@ -1,7 +1,10 @@
 # Changelog
 
+Project branding: SAIF - Secure AI Forge.
+
 ## 0.1.0 - Active Development
 
+- Renamed public project branding to SAIF - Secure AI Forge.
 - Added PostgreSQL/Alembic foundation.
 - Added dashboard command center.
 - Added Web/API discovery and crAPI registry foundation.

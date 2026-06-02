@@ -1,5 +1,7 @@
 # Security Policy
 
+SAIF - Secure AI Forge is an independent project for AI-assisted authorized Web/API security testing, evidence, and reporting. It is not affiliated with Google.
+
 ## Reporting Vulnerabilities
 
 Please report vulnerabilities in SAIF privately to the maintainer. Add a project security contact before public release.

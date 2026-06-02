@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "saif"
 version = "0.1.0"
-description = "SAIF - Security AI Framework for structured Web/API pentesting."
+description = "SAIF - Secure AI Forge for AI-assisted authorized Web/API security testing, evidence, and reporting."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

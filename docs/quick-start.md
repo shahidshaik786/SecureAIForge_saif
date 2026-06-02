@@ -1,8 +1,8 @@
 # Quick Start
 
 ```bash
-git clone <repo-url>
-cd SecureAIFramework_saif
+git clone https://github.com/shahidshaik786/SecureAIForge_saif.git
+cd SecureAIForge_saif
 cp .env.example .env
 ./saif.sh setup
 ./saif.sh init-db
