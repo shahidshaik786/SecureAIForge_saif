@@ -440,6 +440,9 @@ def scan_detail(session: Session, scan_id: int) -> dict:
         "coverage": safe_json(report.get("vulnerability_coverage_matrix", [])),
         "coverage_status": report.get("coverage_status"),
         "report_payload": safe_json(report),
+        "request_map": request_map(scan_id),
+        "ai_trace_index": ai_trace_index(scan_id),
+        "agent_reactions": agent_reactions(scan_id),
         "actions": scan_actions(session, scan),
     }
 
@@ -462,6 +465,49 @@ def table(session: Session, scan_id: int, model, order=True) -> list[dict]:
         AuthenticatedSession: serialize_authenticated_session,
     }.get(model, row)
     return [safe_json(serializer(item)) for item in session.scalars(stmt).all()]
+
+
+def request_map(scan_id: int) -> dict:
+    path = get_settings().evidence_dir / f"scan-{scan_id}" / "request_map.json"
+    return _read_json_file(path, {"scan_id": scan_id, "total_requests": 0, "requests": []})
+
+
+def ai_trace_index(scan_id: int) -> dict:
+    path = get_settings().evidence_dir / f"scan-{scan_id}" / "ai" / "ai_trace_index.json"
+    return _read_json_file(path, {"scan_id": scan_id, "ai_debug_enabled": get_settings().ai_debug, "total_ai_calls": 0, "calls": []})
+
+
+def agent_reactions(scan_id: int) -> list[dict]:
+    path = get_settings().evidence_dir / f"scan-{scan_id}" / "agent_reactions.jsonl"
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            rows.append({"raw": line[:2000]})
+    return safe_json(rows[-200:])
+
+
+def discovery_sources(scan_id: int) -> dict:
+    rows = request_map(scan_id).get("requests") or []
+    counts = {}
+    for row_item in rows:
+        source = str(row_item.get("source") or "unknown")
+        counts[source] = counts.get(source, 0) + 1
+    return safe_json({"scan_id": scan_id, "sources": counts, "total_requests": len(rows)})
+
+
+def _read_json_file(path: Path, fallback):
+    if not path.exists():
+        return safe_json(fallback)
+    try:
+        return safe_json(json.loads(path.read_text(encoding="utf-8", errors="replace")))
+    except Exception as exc:
+        return safe_json({"error": str(exc), "path": str(path), "fallback": fallback})
 
 
 def reports(session: Session, scan_id: int) -> list[dict]:

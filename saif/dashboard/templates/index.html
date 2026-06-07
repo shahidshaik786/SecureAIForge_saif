@@ -9,6 +9,13 @@
   <div class="empty-state">{{ message }}</div>
 {%- endmacro %}
 
+{% if dashboard_error %}
+<section class="notice warning">
+  <strong>{{ dashboard_error }}</strong>
+  {% if dashboard_error_detail %}<p class="mono">{{ dashboard_error_detail }}</p>{% endif %}
+</section>
+{% endif %}
+
 {% if page == "overview" %}
 <section class="metric-grid">
   <div class="metric-card"><span class="metric-icon">▦</span><div><p>Total Scans</p><strong>{{ overview.total_scans | default(0, true) }}</strong><small>All recorded assessments</small></div></div>
@@ -87,19 +94,25 @@
       <label>Target URL<input name="target" type="url" placeholder="http://172.18.144.1:8888" required></label>
       <label>Application Profile<span class="form-help">Select the target application type so SAIF can apply app-specific discovery, auth, and business-logic hints. This does not decide how aggressive the scan is.</span><select name="profile"><option value="auto">Auto-detect</option><option value="web-api">Generic Web/API</option><option value="crapi">crAPI application profile</option><option value="juice-shop">OWASP Juice Shop application profile</option><option value="dvwa">DVWA application profile</option><option value="custom">Custom application profile</option></select></label>
       <label>Engagement Mode<select name="mode"><option value="black-box">black-box</option><option value="gray-box">gray-box</option><option value="white-box">white-box</option></select></label>
-      <label>Auth Mode<select name="auth_mode"><option value="auto">auto</option><option value="username_password">username_password</option><option value="bearer_token">bearer_token</option><option value="api_key">api_key</option><option value="cookie_session">cookie_session</option><option value="manual_session_import">manual_session_import</option><option value="sso_manual_assisted">sso_manual_assisted</option></select></label>
+      <label>Account Source<span class="form-help">Choose where authenticated users/sessions come from. Generated test accounts are created through the registration endpoint when available.</span><select name="account_source"><option value="auto">Auto: credentials, then temporary test accounts</option><option value="credentials_file">Credentials file only</option><option value="generated_test_accounts">Create temporary test accounts</option><option value="existing_session">Existing imported session/token</option><option value="browser_login">Browser login capture</option><option value="oauth_oidc">OAuth/OIDC flow</option><option value="saml">SAML flow</option><option value="manual_import">Manual token/session import</option></select></label>
+      <input name="auth_mode" type="hidden" value="auto">
       <label>Destructive Method Policy<select name="destructive_method_policy"><option value="no_destructive_methods">Do not execute destructive methods</option><option value="detect_only">Detect destructive methods only</option><option value="test_owned_only" selected>Execute only on test-owned resources</option><option value="manual_confirmation">Require manual confirmation before destructive action</option><option value="lab_full_allowed">Lab full allowed</option></select></label>
       <label>Execution Profile<span class="form-help">Select how deep SAIF should test. This controls whether authenticated, payload, authorization, rate-limit, and destructive/state-changing test cases run.</span><select name="destructive_test_policy"><option value="detect_only" data-description="Discovery only. No authenticated, payload, or destructive testing.">Safe Enumeration</option><option value="standard_non_destructive" data-description="Runs applicable non-destructive Web/API security tests.">Standard Non-Destructive Scan</option><option value="authenticated_full" data-description="Runs authenticated and authorization tests without destructive actions.">Authenticated Full Scan</option><option value="lab_full_allowed" data-description="Runs all applicable tests including state-changing/destructive test cases. Works for crAPI, Juice Shop, DVWA, generic Web/API, staging APIs, and any explicitly approved test environment.">Destructive Test Cases - Full Authorized Scan</option></select><span class="form-help" data-execution-description>Discovery only. No authenticated, payload, or destructive testing.</span></label>
       <input name="execution_profile" type="hidden" value="discovery_only">
       <div class="warning-box strong-warning" data-destructive-warning hidden>This execution profile is target-agnostic. It can run against any selected application profile. It may create, modify, replay, or delete test data depending on policy. Use only for authorized lab, staging, or explicitly approved targets.</div>
       <label>Credentials file path<input name="credentials_path" placeholder="configs/credentials.yaml"></label>
+      <div class="warning-box" data-account-source-help>Auto mode uses credentials if provided, otherwise SAIF can create temporary test accounts when registration is available.</div>
       <label data-source-path>Source path<input name="source_path" placeholder="/path/to/source"></label>
+      <label>HAR file<input name="har_file" placeholder="/path/to/login_flow.har"></label>
+      <label>Known workflow validation request(s)<textarea name="known_protected_endpoints" rows="2" placeholder="GET /identity/api/v2/user&#10;GET /api/me"></textarea></label>
+      <label>Known authenticated request<textarea name="known_authenticated_request" rows="3" placeholder="GET /api/me HTTP/1.1&#10;Authorization: Bearer ..."></textarea></label>
+      <label>Login workflow hints<textarea name="login_workflow_hints" rows="2" placeholder="login_url=/x9/action/submit&#10;post_login_action=/dashboard"></textarea></label>
       <div class="check-row"><label><input name="full" type="checkbox"> Full workflow</label><label><input name="enumeration_only" type="checkbox"> Enumeration only</label><label><input name="debug" type="checkbox" checked> Debug live output</label></div>
       <div class="check-row"><label><input name="allow_account_generation" type="checkbox"> Allow SAIF to create test accounts if registration is available</label><label><input name="allow_authenticated_testing" type="checkbox"> Allow authenticated testing</label><label><input name="allow_authorization_testing" type="checkbox"> Allow authorization testing</label><label><input name="allow_payload_testing" type="checkbox"> Allow payload testing</label><label><input name="allow_rate_limit_testing" type="checkbox"> Allow rate-limit / OTP testing</label><label><input name="enable_destructive_tests" type="checkbox"> Enable Destructive Test Cases - Full Authorized Scan</label><label><input name="allow_test_owned_object_creation" type="checkbox"> Allow test-owned object creation</label></div>
       <div class="test-category-box">
         <div class="panel-title"><h3>Test Case Selection</h3><div class="actions"><button type="button" data-select-categories="recommended">Select Recommended</button><button type="button" data-select-categories="all">Select All Applicable</button><button type="button" data-select-categories="clear">Clear All</button></div></div>
         {% set categories = [
-          ("Discovery", [("recon","Recon/Fingerprinting"),("api_discovery","API Discovery"),("method_discovery","Endpoint Method Discovery"),("security_headers","Security Headers"),("error_handling","Error Handling")]),
+          ("Discovery", [("recon","Recon/Fingerprinting"),("api_discovery","API Discovery Basic"),("api_discovery_aggressive","API Discovery Aggressive"),("method_discovery","Endpoint Method Discovery"),("security_headers","Security Headers"),("error_handling","Error Handling")]),
           ("Authentication", [("auth_testing","Login Testing"),("session_management","Session Management"),("jwt_testing","JWT/Token Security"),("password_reset_otp","Password Reset / OTP"),("rate_limiting","Rate Limiting")]),
           ("Authorization", [("authorization_matrix","Authorization Matrix"),("bola_idor","BOLA / IDOR"),("bfla","BFLA"),("mass_assignment","Mass Assignment"),("cross_account_replay","Cross-account Replay")]),
           ("Input Validation", [("xss","XSS"),("sqli","SQL Injection"),("ssrf","SSRF"),("path_traversal","Path Traversal"),("open_redirect","Open Redirect"),("command_injection","Command Injection"),("file_upload","File Upload if detected")]),
@@ -120,6 +133,10 @@
           <div class="detail-item"><span>Application Profile</span><strong data-effective="application_profile">auto-detect</strong></div>
           <div class="detail-item"><span>Engagement Mode</span><strong data-effective="engagement_mode">black-box</strong></div>
           <div class="detail-item"><span>Auth Mode</span><strong data-effective="auth_mode">auto</strong></div>
+          <div class="detail-item"><span>Account Source</span><strong data-effective="account_source">auto</strong></div>
+          <div class="detail-item"><span>Credentials file path</span><strong data-effective="credentials_path">-</strong></div>
+          <div class="detail-item"><span>Required users</span><strong data-effective="required_user_count">2</strong></div>
+          <div class="detail-item"><span>Expected auth flow</span><strong>create users -> login -> validate sessions -> authenticated crawl -> authorization matrix</strong></div>
           <div class="detail-item"><span>Destructive Policy</span><strong data-effective="destructive_policy">Execute only on test-owned resources</strong></div>
           <div class="detail-item"><span>Full Workflow</span><strong data-effective="full_workflow">false</strong></div>
           <div class="detail-item"><span>Select all applicable</span><strong data-effective="select_all_applicable">false</strong></div>
@@ -160,6 +177,7 @@
     <div class="button-stack">
       <button data-preset="default">Default Enumeration</button>
       <button data-preset="crapi-app">crAPI Application Profile</button>
+      <button data-preset="auth-debug">Auth + Authorization Debug</button>
       <button data-preset="gray-box">Gray-box Authenticated API</button>
       <button data-preset="full-authorized">Destructive Test Cases - Full Authorized Scan</button>
       <button data-preset="enumeration-only">Enumeration Only</button>
@@ -213,7 +231,7 @@
 <section class="panel">
   {% set summary = detail.summary | default({}, true) %}
   <div class="panel-title"><h2>Scan #{{ scan_id }}</h2><div class="actions"><a class="button" href="/scans/{{ scan_id }}/control">Control</a><a class="button" href="/scans/{{ scan_id }}/live">Live Monitor</a><a class="button" href="/scans/{{ scan_id }}/auth">Auth Sessions</a><button data-action="/api/scans/{{ scan_id }}/report">Generate Report</button></div></div>
-  <div class="tabs"><a href="#overview">Overview</a><a href="#coverage">Coverage</a><a href="#timeline">Timeline</a><a href="#findings">Findings</a><a href="#payloads">Payload Attempts</a><a href="#agents">Agent Activity</a><a href="#tools">Tool Runs</a><a href="#ai">AI Activity</a><a href="#evidence">Evidence</a><a href="#reports">Reports</a></div>
+  <div class="tabs"><a href="#overview">Overview</a><a href="#request-map">Request Map</a><a href="#ai-monitor">AI Monitor</a><a href="#agent-reactions">Agent Reactions</a><a href="#discovery-sources">Discovery Sources</a><a href="#coverage">Coverage</a><a href="#timeline">Timeline</a><a href="#findings">Findings</a><a href="#payloads">Payload Attempts</a><a href="#agents">Agent Activity</a><a href="#tools">Tool Runs</a><a href="#ai">AI Activity</a><a href="#evidence">Evidence</a><a href="#reports">Reports</a></div>
   <div id="overview" class="detail-grid">
     <div class="detail-item"><span>Target</span><strong class="mono">{{ detail.target or summary.target or "-" }}</strong></div>
     <div class="detail-item"><span>Engagement Mode</span><strong>{{ summary.engagement_mode or "black_box" }}</strong></div>
@@ -224,6 +242,10 @@
     <div class="detail-item"><span>Destructive Policy</span><strong>{{ summary.destructive_test_policy or summary.destructive_method_policy or "detect_only" }} {% if summary.enable_destructive_tests %}<span class="badge badge-high">LAB FULL DESTRUCTIVE TESTING ENABLED</span>{% endif %}</strong></div>
     <div class="detail-item"><span>Test-owned Objects</span><strong>{{ "allowed" if summary.allow_test_owned_object_creation else "not allowed" }}</strong></div>
   </div>
+  <h3 id="request-map">Request Map</h3><div data-json="/api/scans/{{ scan_id }}/request-map"></div>
+  <h3 id="ai-monitor">AI Monitor</h3><div data-json="/api/scans/{{ scan_id }}/ai-trace-index"></div>
+  <h3 id="agent-reactions">Agent Reactions</h3><div data-json="/api/scans/{{ scan_id }}/agent-reactions"></div>
+  <h3 id="discovery-sources">Discovery Sources</h3><div data-json="/api/scans/{{ scan_id }}/discovery-sources"></div>
   <h3 id="coverage">Coverage Matrix</h3>
   {% set coverage = detail.coverage | default([], true) %}
   {% if coverage %}
@@ -250,7 +272,7 @@
 {% set watch_data = watch | default({}, true) %}
 {% set status = watch_data.status | default(watch_data.summary | default({}, true), true) %}
 <section class="panel live-panel">
-  <div class="panel-title"><h2>Live Scan Monitor {{ "#" ~ scan_id if scan_id else "" }}</h2><div class="actions">{% if scan_id %}<button data-action="/api/scans/{{ scan_id }}/pause" class="warning">Pause</button><button data-action="/api/scans/{{ scan_id }}/resume" class="success">Resume</button><button data-action="/api/scans/{{ scan_id }}/stop" class="danger">Stop</button><button data-action="/api/scans/{{ scan_id }}/stop-force" class="danger">Force Stop</button><button data-action="/api/scans/{{ scan_id }}/continue?phase=account_provisioning">Continue Phase</button><button data-action="/api/scans/{{ scan_id }}/resolve-prerequisites">Resolve Prerequisites & Retry</button><button data-action="/api/scans/{{ scan_id }}/auth/validate">Validate Auth</button><button data-action="/api/scans/{{ scan_id }}/auth/relogin">Re-login</button>{% else %}<a class="button primary" href="/control">Start Scan</a>{% endif %}</div></div>
+  <div class="panel-title"><h2>Live Scan Monitor {{ "#" ~ scan_id if scan_id else "" }}</h2><div class="actions">{% if scan_id %}<button data-action="/api/scans/{{ scan_id }}/pause" class="warning">Pause</button><button data-action="/api/scans/{{ scan_id }}/resume" class="success">Resume</button><button data-action="/api/scans/{{ scan_id }}/stop" class="danger">Stop</button><button data-action="/api/scans/{{ scan_id }}/stop-force" class="danger">Force Stop</button><button data-action="/api/scans/{{ scan_id }}/continue?phase=account_provisioning">Continue Phase</button><button data-action="/api/scans/{{ scan_id }}/resolve-prerequisites">Resolve Prerequisites & Retry</button><button data-action="/api/scans/{{ scan_id }}/restart-worker">Restart Worker</button><button data-action="/api/scans/{{ scan_id }}/auth/validate">Validate Auth</button><button data-action="/api/scans/{{ scan_id }}/auth/relogin">Re-login</button><a class="button" href="/api/scans/{{ scan_id }}/logs/tail" target="_blank">View Runtime Logs</a>{% else %}<a class="button primary" href="/control">Start Scan</a>{% endif %}</div></div>
   {% if scan_id %}
     <div id="live-disconnect" class="notice warning" hidden>Live update disconnected. Retrying...</div>
     <div id="live-stale" class="notice warning" hidden>No worker heartbeat detected.</div>
@@ -273,6 +295,8 @@
       <div class="panel inner"><h3>Latest Events</h3><div id="live-events"></div></div>
       <div class="panel inner"><h3>Tool Runs</h3><div id="live-tools"></div></div>
       <div class="panel inner"><h3>AI Calls</h3><div id="live-ai"></div></div>
+      <div class="panel inner"><h3>Request Map</h3><div data-json="/api/scans/{{ scan_id }}/request-map"></div></div>
+      <div class="panel inner"><h3>Agent Reactions</h3><div data-json="/api/scans/{{ scan_id }}/agent-reactions"></div></div>
       <div class="panel inner"><h3>Payload Attempts</h3><div id="live-payloads"></div></div>
       <div class="panel inner"><h3>Evidence</h3><div id="live-evidence"></div></div>
       <div class="panel inner"><h3>Progress</h3><div id="live-progress"></div></div>

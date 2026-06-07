@@ -17,6 +17,7 @@ function inferScanAction(url) {
   if (url.includes('/stop')) return 'stop';
   if (url.includes('/continue') || url.includes('/run-phase')) return 'continue_phase';
   if (url.includes('/resolve-prerequisites')) return 'resolve_prerequisites';
+  if (url.includes('/restart-worker')) return 'restart_worker';
   if (url.includes('/report')) return 'generate_report';
   if (url.includes('/auth/validate')) return 'validate_auth';
   if (url.includes('/auth/relogin')) return 'relogin';
@@ -137,8 +138,12 @@ document.querySelectorAll('[data-start-scan]').forEach(form => {
     const data = new FormData(form);
     let reason = '';
     const isDestructiveFull = data.get('destructive_test_policy') === 'lab_full_allowed';
+    const accountSource = data.get('account_source') || 'auto';
+    const authProfile = ['authenticated_full', 'lab_full_allowed'].includes(String(data.get('destructive_test_policy') || '')) || data.get('execution_profile') === 'auth-authorization-debug';
     if (!data.get('target')) reason = 'Target URL is required.';
     else if (!data.get('confirm')) reason = 'Authorization confirmation is required before starting a scan.';
+    else if (accountSource === 'credentials_file' && !data.get('credentials_path')) reason = 'Credentials file selected, but no credentials path was provided.';
+    else if (authProfile && !['auto', 'credentials_file', 'generated_test_accounts', 'existing_session'].includes(String(accountSource))) reason = 'Select an account source for authenticated testing.';
     else if (isDestructiveFull && !['lab_full_allowed', 'test_owned_only', 'manual_confirmation'].includes(String(data.get('destructive_method_policy') || ''))) reason = 'Select an allowed destructive policy for Destructive Test Cases - Full Authorized Scan.';
     else if (isDestructiveFull && !data.get('confirm_destructive_testing')) reason = 'Confirm destructive testing acknowledgement before enabling destructive test cases.';
     if (submit) {
@@ -167,8 +172,10 @@ document.querySelectorAll('[data-start-scan]').forEach(form => {
       enumeration_only: Boolean(data.get('enumeration_only')),
       debug: Boolean(data.get('debug')),
       confirm_authorized: Boolean(data.get('confirm')),
-      auth_mode: data.get('auth_mode') || 'auto',
+      account_source: data.get('account_source') || 'auto',
+      auth_mode: data.get('account_source') || data.get('auth_mode') || 'auto',
       credentials_path: data.get('credentials_path') || null,
+      required_user_count: 2,
       source_path: data.get('source_path') || null,
       allow_account_generation: Boolean(data.get('allow_account_generation')),
       allow_authenticated_testing: Boolean(data.get('allow_authenticated_testing')),
@@ -182,6 +189,14 @@ document.querySelectorAll('[data-start-scan]').forEach(form => {
       allow_test_owned_object_creation: Boolean(data.get('allow_test_owned_object_creation')),
       confirm_destructive_testing: Boolean(data.get('confirm_destructive_testing')),
       selected_test_categories: data.getAll('selected_test_categories'),
+      known_protected_endpoints: String(data.get('known_protected_endpoints') || '').split(/\r?\n|,/).map((line) => {
+        const trimmed = line.trim();
+        const match = trimmed.match(/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(.+)$/i);
+        return match ? {method: match[1].toUpperCase(), path: match[2].trim()} : trimmed ? {method: 'GET', path: trimmed} : null;
+      }).filter(Boolean),
+      har_file: data.get('har_file') || null,
+      known_authenticated_requests: String(data.get('known_authenticated_request') || '').trim() ? [String(data.get('known_authenticated_request') || '')] : [],
+      login_workflow_hints: Object.fromEntries(String(data.get('login_workflow_hints') || '').split(/\r?\n/).map((line) => line.split('=')).filter((pair) => pair.length === 2).map(([key, value]) => [key.trim(), value.trim()])),
     };
     if (payload.destructive_test_policy === 'lab_full_allowed' && !payload.confirm_destructive_testing) {
       message.textContent = 'Confirm destructive testing acknowledgement before enabling destructive test cases.';
@@ -209,20 +224,22 @@ document.querySelectorAll('[data-preset]').forEach(button => {
     if (!form) return;
     const preset = button.dataset.preset;
     const isFullAuthorized = preset === 'full-authorized';
+    const isAuthDebug = preset === 'auth-debug';
     if (preset === 'crapi-app') form.elements.profile.value = 'crapi';
-    if (preset === 'default' || preset === 'enumeration-only' || preset === 'gray-box' || isFullAuthorized) form.elements.profile.value = 'auto';
-    form.elements.mode.value = preset === 'gray-box' || isFullAuthorized ? 'gray-box' : 'black-box';
-    form.elements.auth_mode.value = 'auto';
-    form.elements.execution_profile.value = isFullAuthorized ? 'destructive-full-scan' : (preset === 'gray-box' ? 'test-owned-validation' : 'discovery_only');
-    form.elements.full.checked = preset === 'full-authorized' || preset === 'gray-box';
+    if (preset === 'default' || preset === 'enumeration-only' || preset === 'gray-box' || isFullAuthorized || isAuthDebug) form.elements.profile.value = isAuthDebug ? 'crapi' : 'auto';
+    form.elements.mode.value = preset === 'gray-box' || isFullAuthorized || isAuthDebug ? 'gray-box' : 'black-box';
+    form.elements.account_source.value = isAuthDebug || isFullAuthorized || preset === 'gray-box' ? 'generated_test_accounts' : 'auto';
+    form.elements.auth_mode.value = form.elements.account_source.value;
+    form.elements.execution_profile.value = isAuthDebug ? 'auth-authorization-debug' : isFullAuthorized ? 'destructive-full-scan' : (preset === 'gray-box' ? 'authenticated-full-scan' : 'discovery_only');
+    form.elements.full.checked = preset === 'full-authorized' || preset === 'gray-box' || isAuthDebug;
     form.elements.enumeration_only.checked = preset === 'enumeration-only';
     form.elements.destructive_method_policy.value = isFullAuthorized ? 'lab_full_allowed' : (preset === 'default' || preset === 'enumeration-only' ? 'detect_only' : 'test_owned_only');
-    form.elements.destructive_test_policy.value = isFullAuthorized ? 'lab_full_allowed' : (preset === 'gray-box' ? 'authenticated_full' : 'detect_only');
+    form.elements.destructive_test_policy.value = isFullAuthorized ? 'lab_full_allowed' : (preset === 'gray-box' || isAuthDebug ? 'authenticated_full' : 'detect_only');
     form.elements.enable_destructive_tests.checked = isFullAuthorized;
-    form.elements.allow_test_owned_object_creation.checked = isFullAuthorized;
+    form.elements.allow_test_owned_object_creation.checked = isFullAuthorized || isAuthDebug || preset === 'gray-box';
     form.elements.confirm_destructive_testing.checked = false;
-    form.elements.allow_account_generation.checked = isFullAuthorized;
-    form.elements.allow_authenticated_testing.checked = isFullAuthorized || preset === 'gray-box';
+    form.elements.allow_account_generation.checked = isFullAuthorized || isAuthDebug || preset === 'gray-box';
+    form.elements.allow_authenticated_testing.checked = isFullAuthorized || preset === 'gray-box' || isAuthDebug;
     form.elements.allow_authorization_testing.checked = form.elements.allow_authenticated_testing.checked;
     form.elements.allow_payload_testing.checked = isFullAuthorized || preset === 'gray-box';
     form.elements.allow_rate_limit_testing.checked = isFullAuthorized;
@@ -274,6 +291,9 @@ function updateEffectiveConfig(form) {
   set('application_profile', selectLabel(form.elements.profile));
   set('engagement_mode', form.elements.mode?.value || 'black-box');
   set('auth_mode', form.elements.auth_mode?.value || 'auto');
+  set('account_source', form.elements.account_source?.value || 'auto');
+  set('credentials_path', form.elements.credentials_path?.value || '-');
+  set('required_user_count', '2');
   set('destructive_policy', selectLabel(form.elements.destructive_method_policy));
   set('full_workflow', boolText(form.elements.full?.checked));
   set('select_all_applicable', boolText(totalCount > 0 && selectedCount === totalCount));
@@ -313,6 +333,7 @@ function syncExecutionProfile(form) {
 function syncExecutionProfileFlags(form) {
   const profile = form.elements.destructive_test_policy?.value || 'detect_only';
   const warning = form.querySelector('[data-destructive-warning]');
+  const accountHelp = form.querySelector('[data-account-source-help]');
   const isSafeEnumeration = profile === 'detect_only';
   const isStandard = profile === 'standard_non_destructive';
   const isAuthenticated = profile === 'authenticated_full';
@@ -342,7 +363,11 @@ function syncExecutionProfileFlags(form) {
   } else if (isAuthenticated) {
     form.elements.full.checked = true;
     form.elements.enumeration_only.checked = false;
-    form.elements.allow_account_generation.checked = false;
+    if (form.elements.profile?.value === 'crapi' || form.elements.account_source?.value === 'generated_test_accounts') {
+      form.elements.account_source.value = 'generated_test_accounts';
+      form.elements.auth_mode.value = 'generated_test_accounts';
+      form.elements.allow_account_generation.checked = true;
+    }
     form.elements.allow_authenticated_testing.checked = true;
     form.elements.allow_authorization_testing.checked = true;
     form.elements.allow_payload_testing.checked = true;
@@ -365,6 +390,14 @@ function syncExecutionProfileFlags(form) {
     }
   }
   if (warning) warning.hidden = !isDestructive;
+  if (accountHelp) {
+    const source = form.elements.account_source?.value || 'auto';
+    accountHelp.textContent = source === 'credentials_file'
+      ? 'SAIF will not create new users unless fallback account creation is explicitly enabled.'
+      : source === 'generated_test_accounts'
+        ? 'SAIF will create temporary test accounts through the registration endpoint, then login and validate sessions.'
+        : 'Auto mode uses credentials if provided, otherwise SAIF can create temporary test accounts when registration is available.';
+  }
 }
 
 function syncExecutionDescription(form) {
@@ -385,11 +418,17 @@ const livePanel = document.querySelector('.live-panel');
 if (livePanel && location.pathname.includes('/live')) {
   const scanId = location.pathname.startsWith('/scans/') ? location.pathname.split('/')[2] : document.querySelector('[data-json^="/api/scans/"]')?.dataset.json.split('/')[3];
   if (scanId) {
+    let liveAbort = null;
+    let liveTimer = null;
+    let stopped = false;
     const updateLive = async () => {
       const disconnected = document.getElementById('live-disconnect');
       const stale = document.getElementById('live-stale');
+      if (liveAbort) liveAbort.abort();
+      liveAbort = new AbortController();
+      const timeoutId = setTimeout(() => liveAbort.abort(), 8000);
       try {
-        const response = await fetch(`/api/scans/${scanId}/live-state`, { cache: 'no-store' });
+        const response = await fetch(`/api/scans/${scanId}/live-state`, { cache: 'no-store', signal: liveAbort.signal, headers: { 'Connection': 'close' } });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const state = await response.json();
         if (disconnected) disconnected.hidden = true;
@@ -435,10 +474,18 @@ if (livePanel && location.pathname.includes('/live')) {
         }]);
         applyActionStates();
       } catch (error) {
-        if (disconnected) disconnected.hidden = false;
+        if (error.name !== 'AbortError' && disconnected) disconnected.hidden = false;
+      } finally {
+        clearTimeout(timeoutId);
+        liveAbort = null;
+        if (!stopped) liveTimer = setTimeout(updateLive, 2000);
       }
     };
+    window.addEventListener('beforeunload', () => {
+      stopped = true;
+      if (liveTimer) clearTimeout(liveTimer);
+      if (liveAbort) liveAbort.abort();
+    });
     updateLive();
-    setInterval(updateLive, 2000);
   }
 }

@@ -4,15 +4,18 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from saif.ai.advisor import ask_ai_for_plan_suggestions, ask_ai_for_report_wording, persist_ai_trace_from_validation
 from saif.ai.ollama import OllamaChatError, OllamaClient, OllamaHTTPError, OllamaJSONError, OllamaServerError, OllamaTimeoutError
 from saif.config import get_settings
-from saif.db.models import AiCallRun, Evidence, Finding, Log, Project, Scan, ScanStatus, ToolRun
+from saif.db.models import Evidence, Finding, Log, Project, Scan, ScanStatus, ToolRun
 from saif.services.evidence import write_evidence
+from saif.services.pentest_engine import ai_decision_contract
 
 
 class AIPrecheckError(RuntimeError):
@@ -186,54 +189,32 @@ def ensure_ai_ready() -> OllamaClient:
 
 def build_ai_scan_plan(prompt: str, target_url: str, parsed_intent: dict, selected_tools: list[str], debug: bool = False) -> AIContext:
     client = ensure_ai_ready()
-    settings = get_settings()
-    timeout = settings.ollama_timeout_seconds
-    messages = _planning_messages(prompt, target_url, parsed_intent, selected_tools, simplified=False)
-    simplified_messages = _planning_messages(prompt, target_url, parsed_intent, selected_tools, simplified=True)
-    raw = ""
-    plan: dict | None = None
-    for attempt, planned_messages in enumerate([messages, simplified_messages], start=1):
-        try:
-            raw = client.chat(planned_messages, timeout=timeout, format_="json").get("message", {}).get("content", "")
-            if debug:
-                print("Raw AI planning response:")
-                print(raw)
-            try:
-                plan = _parse_json_object(raw)
-            except AIPlanParseFailedError:
-                if attempt == 1:
-                    continue
-                raise
-            break
-        except (httpx.TimeoutException, OllamaTimeoutError) as exc:
-            if attempt == 2:
-                raise AIPlanningTimeoutError(
-                    base_url=client.base_url,
-                    model=client.model,
-                    timeout_seconds=timeout,
-                    prompt=prompt,
-                    target=target_url,
-                    error=str(exc),
-                    ai_call_attempts=client.last_call_attempts,
-                ) from exc
-            continue
-        except OllamaHTTPError as exc:
-            raise AIChatFailedError(f"HTTP {exc.status_code}: {exc.body}", getattr(exc, "attempts", [])) from exc
-        except OllamaServerError as exc:
-            raise AIChatFailedError(str(exc), exc.attempts) from exc
-        except OllamaJSONError as exc:
-            raise AIChatFailedError(str(exc), exc.attempts) from exc
-        except OllamaChatError as exc:
-            raise AIChatFailedError(str(exc), exc.attempts) from exc
-        except (httpx.ConnectError, httpx.ReadError, httpx.HTTPStatusError) as exc:
-            raise AIChatFailedError(str(exc)) from exc
-        except json.JSONDecodeError as exc:
-            raise AIChatFailedError(f"Ollama returned invalid JSON: {exc}") from exc
-    if plan is None:
-        plan = _parse_json_object(raw)
+    plan = ask_ai_for_plan_suggestions(
+        prompt=prompt,
+        target_url=target_url,
+        parsed_intent=parsed_intent,
+        selected_tools=selected_tools,
+        client=client,
+        debug=debug,
+    )
     if not _is_executable_plan(plan):
-        reason = str(plan.get("reason") or "AI did not return a valid executable test plan.") if isinstance(plan, dict) else "AI did not return a valid executable test plan."
-        raise AIPlanNotApprovedError(reason=reason, raw_plan=plan if isinstance(plan, dict) else {})
+        plan = {
+            "approved": True,
+            "mode": "default-enumeration",
+            "target": target_url,
+            "environment": "testing",
+            "authorized_testing_mode": True,
+            "scope_confirmation": "Tester is responsible for confirming authorization and non-production usage.",
+            "tools": selected_tools,
+            "test_cases": [],
+            "not_applicable": [],
+            "missing_prerequisites": [],
+            "reason": "AI planning unavailable; deterministic fallback plan used.",
+            "ai_planning_status": "warning",
+            "ai_planning_error": "AI did not return a valid executable test plan.",
+            "ai_available": False,
+            "deterministic_mode": True,
+        }
     return AIContext(provider="Ollama", model=client.model, base_url=client.base_url, prompt=prompt, scan_plan=plan, ai_call_attempts=client.last_call_attempts)
 
 
@@ -341,88 +322,6 @@ def _is_executable_plan(plan: object) -> bool:
     return True
 
 
-def _record_ai_call_run(
-    session: Session,
-    scan: Scan,
-    stage: str,
-    client: OllamaClient,
-    attempts: list[dict],
-    response_status: str | None = None,
-    error_message: str | None = None,
-    request_summary: dict | None = None,
-) -> None:
-    settings = get_settings()
-    final_attempt = attempts[-1] if attempts else {}
-    status = response_status or final_attempt.get("response_status") or "completed"
-    error = error_message if error_message is not None else final_attempt.get("error_message")
-    started_at = datetime.now(timezone.utc)
-    duration_ms = sum(int(item.get("duration_ms") or 0) for item in attempts) if attempts else None
-    if duration_ms is not None:
-        from datetime import timedelta
-
-        started_at = datetime.now(timezone.utc) - timedelta(milliseconds=duration_ms)
-    evidence_path = write_evidence(
-        scan.id,
-        f"ai_call_{stage}_{datetime.now(timezone.utc).strftime('%H%M%S%f')}",
-        {
-            "stage": stage,
-            "model": client.model,
-            "base_url": client.base_url,
-            "timeout_seconds": settings.ollama_timeout_seconds,
-            "ai_call_attempts": attempts,
-            "status": status,
-            "error": error,
-        },
-    )
-    session.add(
-        Evidence(
-            scan_id=scan.id,
-            kind="ai",
-            path=str(evidence_path),
-            summary=f"AI call {stage}: {status}",
-            metadata_json={"stage": stage, "model": client.model, "status": status},
-        )
-    )
-    try:
-        from saif.services.progress import emit_progress
-
-        emit_progress(
-            session,
-            scan,
-            f"AI call {stage} {status} evidence={evidence_path}",
-            phase="ai_evidence_review" if stage == "evidence_review" else "ai_planning",
-            agent="ai_reviewer_agent" if stage == "evidence_review" else "ai_planner_agent",
-            tool="ollama",
-            event_type="ai_call_completed" if status == "completed" else "error",
-            level="INFO" if status == "completed" else "ERROR",
-            context={"stage": stage, "model": client.model, "status": status, "evidence_path": str(evidence_path), "error": error},
-        )
-    except Exception:
-        pass
-    prompt_chars = None
-    merged_request = request_summary or final_attempt.get("request_summary") or {}
-    if isinstance(merged_request, dict):
-        prompt_chars = merged_request.get("prompt_chars_estimate")
-    session.add(
-        AiCallRun(
-            scan_id=scan.id,
-            stage=stage,
-            model=client.model,
-            prompt_tokens_estimate=int((prompt_chars or 0) / 4) if prompt_chars is not None else None,
-            response_status=status,
-            http_status=final_attempt.get("http_status"),
-            started_at=started_at,
-            completed_at=datetime.now(timezone.utc),
-            duration_ms=duration_ms,
-            retry_count=max(0, len(attempts) - 1),
-            error_message=error,
-            request_summary=merged_request,
-            response_summary=final_attempt.get("response_summary"),
-            evidence_path=str(evidence_path),
-        )
-    )
-
-
 def _fallback_evidence_review(status: str, error: str) -> dict:
     return {
         "evidence_review": "AI evidence review did not complete. A local rule-engine summary was used so the scan report can still be generated.",
@@ -509,16 +408,7 @@ def ai_review_evidence(session: Session, scan: Scan, ai_context: AIContext) -> d
         client.tags(timeout=settings.ollama_connect_timeout_seconds)
     except Exception as exc:
         review = _fallback_evidence_review("failed_ai_unavailable", f"Ollama health check failed before evidence review: {exc}")
-        _record_ai_call_run(
-            session,
-            scan,
-            "evidence_review",
-            client,
-            [],
-            response_status=review["ai_evidence_review_status"],
-            error_message=review["ai_evidence_review_error"],
-            request_summary={"stage": "evidence_review", "health_check": "failed"},
-        )
+        _persist_failed_ai_trace(session, scan, "evidence_review", "report_generation", client, review["ai_evidence_review_error"], [], ai_context)
         return review
 
     tool_runs = session.scalars(select(ToolRun).where(ToolRun.scan_id == scan.id)).all()
@@ -537,43 +427,40 @@ def ai_review_evidence(session: Session, scan: Scan, ai_context: AIContext) -> d
         ),
         settings.ai_max_evidence_chars,
     )
-    messages = [
-        {
-            "role": "system",
-            "content": "Return strict JSON only. Review compact penetration testing evidence for authorized testing/staging.",
-        },
-        {
-            "role": "user",
-            "content": json.dumps(
-                {
-                    "target_prompt": ai_context.prompt[:1200],
-                    "scan_plan": _compact_plan(ai_context.scan_plan),
-                    "evidence_summary": evidence_summary,
-                    "required_output": {
-                        "evidence_review": "short review",
-                        "discovered_attack_surface_summary": {},
-                        "likely_auth_model": "unknown",
-                        "likely_api_model": "unknown",
-                        "missing_prerequisites": [],
-                        "applicable_next_stage_test_cases": [],
-                        "recommended_next_stage": "next command or stage",
-                        "finding_summary": [],
-                        "risk_notes": [],
-                    },
-                }
-            ),
-        },
-    ]
     try:
-        review = client.chat_json(messages, timeout=settings.ollama_timeout_seconds, stage="evidence_review")
-        if not isinstance(review, dict):
-            raise OllamaJSONError("AI evidence review returned a non-object response", client.last_call_attempts)
-        review["ai_evidence_review_status"] = "completed"
-        review["ai_evidence_review_error"] = None
-        review["local_fallback_summary_used"] = False
-        review["ai_call_attempts"] = client.last_call_attempts
-        _record_ai_call_run(session, scan, "evidence_review", client, client.last_call_attempts, request_summary={"stage": "evidence_review"})
-        return review
+        advisor_result = ask_ai_for_report_wording(
+            session,
+            scan,
+            current_phase="report_generation",
+            scope={"target": ai_context.scan_plan.get("target"), "allowed_hosts": [_host_from_target(ai_context.scan_plan.get("target"))]},
+            evidence={
+                "target_prompt": ai_context.prompt[:1200],
+                "scan_plan": _compact_plan(ai_context.scan_plan),
+                "evidence_summary": evidence_summary,
+            },
+            stage="evidence_review",
+        )
+        decision = advisor_result.get("decision") or {}
+        if not advisor_result.get("approved"):
+            review = _fallback_evidence_review("failed_ai_rejected", str(advisor_result.get("reason") or "AI evidence review rejected by guardrails"))
+            review["ai_call_attempts"] = advisor_result.get("ai_call_attempts") or []
+            return review
+        return {
+            "evidence_review": str(decision.get("executive_summary") or decision.get("reason") or "AI advisory wording accepted."),
+            "discovered_attack_surface_summary": {},
+            "likely_auth_model": "unknown",
+            "likely_api_model": "unknown",
+            "missing_prerequisites": [],
+            "applicable_next_stage_test_cases": [],
+            "recommended_next_stage": str(decision.get("remediation_text") or "Continue deterministic validation of applicable findings."),
+            "finding_summary": [],
+            "risk_notes": [],
+            "ai_evidence_review_status": "completed",
+            "ai_evidence_review_error": None,
+            "local_fallback_summary_used": False,
+            "ai_call_attempts": advisor_result.get("ai_call_attempts") or [],
+            "ai_decision_memory": advisor_result,
+        }
     except OllamaTimeoutError as exc:
         status = "failed_ai_timeout"
         error = str(exc)
@@ -591,20 +478,55 @@ def ai_review_evidence(session: Session, scan: Scan, ai_context: AIContext) -> d
         error = str(exc)
     review = _fallback_evidence_review(status, error)
     review["ai_call_attempts"] = client.last_call_attempts
-    _record_ai_call_run(session, scan, "evidence_review", client, client.last_call_attempts, response_status=status, error_message=error)
+    _persist_failed_ai_trace(session, scan, "evidence_review", "report_generation", client, error, client.last_call_attempts, ai_context)
     return review
 
 
+def _persist_failed_ai_trace(
+    session: Session,
+    scan: Scan,
+    stage: str,
+    phase: str,
+    client: OllamaClient,
+    error: str,
+    attempts: list[dict],
+    ai_context: AIContext,
+) -> None:
+    target = ai_context.scan_plan.get("target")
+    contract = ai_decision_contract(
+        phase,
+        {"target_prompt": ai_context.prompt[:1200], "scan_plan": _compact_plan(ai_context.scan_plan), "error": error},
+        ["draft_report_wording"],
+        scope={"target": target, "allowed_hosts": [_host_from_target(target)]},
+        output_schema={"decision": "string", "reason": "string", "confidence": "low|medium|high", "next_action": "draft_report_wording"},
+        timeout_seconds=90 if stage in {"evidence_review", "report_wording"} else 60,
+        retry_limit=get_settings().ollama_max_retries,
+    )
+    persist_ai_trace_from_validation(
+        session,
+        scan,
+        {
+            "approved": False,
+            "reason": error,
+            "decision": None,
+            "ai_call_attempts": attempts,
+            "ai_trace": {
+                "stage": stage,
+                "phase": phase,
+                "contract": contract,
+                "model": client.model,
+                "base_url": client.base_url,
+                "raw_response": getattr(client, "last_raw_response", "") or "",
+            },
+        },
+        "failed",
+    )
+
+
 def log_ai_context(session: Session, scan: Scan, ai_context: AIContext, parsed_intent: dict, selected_target: str, selected_tools: list[str]) -> None:
+    persist_ai_trace_from_validation(session, scan, ai_context.scan_plan.get("ai_validation"), "accepted")
     if ai_context.ai_call_attempts:
-        _record_ai_call_run(
-            session,
-            scan,
-            "initial_planning",
-            OllamaClient(model=ai_context.model, base_url=ai_context.base_url),
-            ai_context.ai_call_attempts,
-            request_summary={"stage": "initial_planning", "selected_target": selected_target, "selected_tools": selected_tools},
-        )
+        pass
     session.add(
         Log(
             scan_id=scan.id,
@@ -620,6 +542,11 @@ def log_ai_context(session: Session, scan: Scan, ai_context: AIContext, parsed_i
                 "selected_target": selected_target,
                 "selected_tools": selected_tools,
                 "ai_scan_plan": ai_context.scan_plan,
+                "ai_planning_status": ai_context.scan_plan.get("ai_planning_status") or "approved",
+                "ai_planning_error": ai_context.scan_plan.get("ai_planning_error"),
+                "ai_planning_warning": ai_context.scan_plan.get("ai_planning_warning") or ai_context.scan_plan.get("warning"),
+                "ai_available": ai_context.scan_plan.get("ai_available", True),
+                "deterministic_mode": ai_context.scan_plan.get("deterministic_mode", False),
                 "ai_planning_attempts": ai_context.ai_call_attempts or [],
                 "environment_assumption": "testing/staging/non-production",
                 "authorized_testing_caution": "Use only on authorized testing/staging environments. Tester is responsible for confirming scope and approval.",
@@ -662,6 +589,7 @@ def log_ai_review(session: Session, scan: Scan, ai_context: AIContext, review: d
         session.add(
             Finding(
                 scan_id=scan.id,
+                finding_type="observation",
                 title=title[:255],
                 severity="info",
                 description=description,
@@ -768,3 +696,10 @@ def _summarize_output(output: dict | None) -> str:
     if output.get("count") is not None:
         return f"count={output['count']}"
     return str(output)[:300]
+
+
+def _host_from_target(target: object) -> str | None:
+    if not target:
+        return None
+    parsed = urlparse(str(target) if "://" in str(target) else f"//{target}")
+    return parsed.hostname

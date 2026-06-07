@@ -174,7 +174,13 @@ def production_readiness_for_scan(session: Session, scan: Scan) -> dict:
     tool_status = {item.tool_name: item.status for item in tool_runs}
     profiles = session.scalars(select(ApplicationProfile).where(ApplicationProfile.scan_id == scan.id)).all()
     crapi_detected = any(item.primary_profile == "crapi" or item.lab_profile == "crapi" for item in profiles)
-    auth_sessions = session.scalar(select(func.count(AuthenticatedSession.id)).where(AuthenticatedSession.scan_id == scan.id, AuthenticatedSession.login_status == "login_success")) or 0
+    auth_sessions = session.scalar(
+        select(func.count(AuthenticatedSession.id)).where(
+            AuthenticatedSession.scan_id == scan.id,
+            AuthenticatedSession.login_status == "login_success",
+            AuthenticatedSession.session_status == "usable",
+        )
+    ) or 0
     flow_types = {
         item.flow_type
         for item in session.scalars(select(DiscoveredAuthFlow).where(DiscoveredAuthFlow.scan_id == scan.id)).all()

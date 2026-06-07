@@ -22,6 +22,8 @@ class ScanStatus(StrEnum):
     FAILED_AI_TIMEOUT = "failed_ai_timeout"
     FAILED_AI = "failed_ai"
     FAILED_SYSTEM = "failed_system"
+    EXECUTION_ERROR = "execution_error"
+    AUTH_FAILED = "auth_failed"
 
 
 class RunStatus(StrEnum):
@@ -99,7 +101,7 @@ class Agent(Base):
 
 class TestCase(Base):
     __tablename__ = "test_cases"
-    __table_args__ = (UniqueConstraint("case_id", "profile", name="uq_test_case_profile"),)
+    __table_args__ = (UniqueConstraint("scan_id", "case_id", "profile", name="uq_test_case_scan_case_profile"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     scan_id: Mapped[int | None] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"))
@@ -287,6 +289,29 @@ class AiCallRun(Base):
     evidence_path: Mapped[str | None] = mapped_column(Text)
 
 
+class AiDecision(Base):
+    __tablename__ = "ai_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scan_id: Mapped[int | None] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"))
+    ai_call_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    stage: Mapped[str] = mapped_column(String(80), nullable=False)
+    phase: Mapped[str | None] = mapped_column(String(120))
+    agent: Mapped[str | None] = mapped_column(String(120))
+    tool: Mapped[str | None] = mapped_column(String(120))
+    model: Mapped[str | None] = mapped_column(String(160))
+    prompt_hash: Mapped[str | None] = mapped_column(String(128))
+    response_hash: Mapped[str | None] = mapped_column(String(128))
+    evidence_path: Mapped[str | None] = mapped_column(Text)
+    parsed_response_json: Mapped[dict | None] = mapped_column(JSON)
+    decision: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[str | None] = mapped_column(String(40))
+    accepted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    rejected_reasons: Mapped[list | None] = mapped_column(JSON)
+    used_for_execution: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    used_as_advisory: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
 class ToolRegistry(Base):
     __tablename__ = "tool_registry"
 
@@ -361,6 +386,7 @@ class Finding(Base):
     scan_id: Mapped[int] = mapped_column(ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
     test_run_id: Mapped[int | None] = mapped_column(ForeignKey("test_runs.id", ondelete="SET NULL"))
     finding_uid: Mapped[str | None] = mapped_column(String(80), unique=True)
+    finding_type: Mapped[str] = mapped_column(String(40), default="finding", nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     severity: Mapped[str] = mapped_column(String(40), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)

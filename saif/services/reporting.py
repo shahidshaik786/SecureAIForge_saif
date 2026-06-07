@@ -150,6 +150,15 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
     ai_review_context = next((item.context for item in reversed(logs) if item.message == "AI evidence review" and item.context), {})
     tool_prep_context = next((item.context for item in reversed(logs) if item.message == "Tool preparation" and item.context), {})
     execution_context = next((item.context for item in reversed(logs) if item.message == "Execution summary" and item.context), {})
+    endpoint_inventory_context = next((item.data for item in reversed(pipeline_artifacts) if item.name == "endpoint_inventory" and item.data), {})
+    workflow_request_inventory = next((item.data for item in reversed(pipeline_artifacts) if item.name == "workflow_request_inventory" and item.data), {})
+    authenticated_behavior_proof = next((item.data for item in reversed(pipeline_artifacts) if item.name == "authenticated_behavior_proof" and item.data), {})
+    request_map_payload = _read_scan_json(scan.id, "request_map.json", {"scan_id": scan.id, "total_requests": 0, "requests": []}) if scan else {}
+    ai_trace_index_payload = _read_scan_json(scan.id, "ai/ai_trace_index.json", {"scan_id": scan.id, "total_ai_calls": 0, "calls": []}) if scan else {}
+    agent_reactions_payload = _read_scan_jsonl(scan.id, "agent_reactions.jsonl") if scan else []
+    target_classification_context = next((item.data for item in reversed(pipeline_artifacts) if item.name == "target_classification" and item.data), {})
+    response_analysis_items = [item.data for item in pipeline_artifacts if item.artifact_type == "response_analysis" and item.data]
+    auth_coverage_blocker = next((item.data for item in reversed(pipeline_artifacts) if item.name == "auth_coverage_blocked" and item.data), None)
     unavailable_tools = [
         {
             "tool": item.tool_name,
@@ -160,6 +169,15 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
         if item.status in {"missing_prerequisite", "missing_credentials", "missing_tool", "tool_install_failed", "target_unreachable", "out_of_scope", "manual_confirmation_required", "execution_error"}
     ]
     ai_plan = ai_plan_context.get("ai_scan_plan") or {}
+    ai_decision_memory = [
+        {
+            "summary": item.summary,
+            "path": item.path,
+            "metadata": item.metadata_json,
+        }
+        for item in evidence
+        if item.kind == "ai_decision"
+    ]
     evidence_by_tool = {
         (item.metadata_json or {}).get("tool"): item.path
         for item in evidence
@@ -175,6 +193,8 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
         }
         for item in tool_runs
     ]
+    executive_findings = [item for item in findings if _is_executive_finding(item)]
+    observations = [item for item in findings if not _is_executive_finding(item)]
     test_case_by_id = {item.id: item for item in test_cases}
 
     def tool_run_case(item: ToolRun) -> TestCase | None:
@@ -185,6 +205,9 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
         "project": {"id": project.id, "name": project.name},
         "targets": [{"id": target.id, "url": target.url, "scope": _sanitize_scope(target.scope)} for target in targets],
         "target": prompt_context.get("selected_target") or (targets[0].url if targets else None),
+        "target_classification": target_classification_context.get("target_classification", {}),
+        "pentest_phase_order": target_classification_context.get("phase_order", []),
+        "decision_loop": target_classification_context.get("decision_loop"),
         "target_source": prompt_context.get("target_source"),
         "tester_prompt": prompt_context.get("prompt"),
         "prompt": prompt_context.get("prompt"),
@@ -192,7 +215,11 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
         "authorized_testing_caution": "Use only on authorized testing/staging environments. Tester is responsible for confirming scope and approval.",
         "ai_provider": ai_plan_context.get("ai_provider") or (scan.ai_provider if scan else None),
         "ai_model": ai_plan_context.get("ai_model"),
-        "ai_planning_status": "approved" if ai_plan_context.get("ai_scan_plan") else (scan.status if scan else None),
+        "ai_planning_status": ai_plan_context.get("ai_planning_status") or ("approved" if ai_plan_context.get("ai_scan_plan") else (scan.status if scan else None)),
+        "ai_planning_error": ai_plan_context.get("ai_planning_error"),
+        "ai_planning_warning": ai_plan_context.get("ai_planning_warning"),
+        "ai_available": ai_plan_context.get("ai_available"),
+        "deterministic_mode": ai_plan_context.get("deterministic_mode"),
         "ai_timeout_seconds": get_settings().ollama_timeout_seconds,
         "ai_prompt": ai_plan_context.get("prompt") or prompt_context.get("prompt"),
         "ai_scan_plan": ai_plan,
@@ -229,6 +256,21 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
             }
             for item in ai_call_runs
         ],
+        "coverage_blockers": [auth_coverage_blocker] if auth_coverage_blocker else [],
+        "auth_coverage_blocker_message": (
+            "Authorization testing requires confirmed authenticated behavior and testable workflow requests. "
+            "SAIF captured login/session material but could not prove post-login application behavior or identify authorization-sensitive requests. "
+            "This is a coverage blocker, not a vulnerability."
+            if auth_coverage_blocker
+            else None
+        ),
+        "ai_decision_memory": ai_decision_memory,
+        "request_map": {
+            "total_requests": request_map_payload.get("total_requests") or len(request_map_payload.get("requests") or []),
+            "requests": (request_map_payload.get("requests") or [])[:200],
+        },
+        "ai_trace_index": ai_trace_index_payload,
+        "agent_reactions": agent_reactions_payload[-200:],
         "ai_retry_count": max([item.retry_count for item in ai_call_runs], default=0),
         "parsed_intent": prompt_context.get("parsed_intent"),
         "selected_target": prompt_context.get("selected_target") or (targets[0].url if targets else None),
@@ -319,6 +361,10 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
         "not_applicable_test_cases": ai_plan.get("not_applicable", []),
         "missing_prerequisite_test_cases": ai_plan.get("missing_prerequisites", []),
         "discovered_urls": [item.url for item in discovered_endpoints if item.endpoint_type in {"web", "external", "web_service"}],
+        "endpoint_inventory": endpoint_inventory_context.get("endpoint_inventory", []),
+        "response_analysis": response_analysis_items[:200],
+        "workflow_request_inventory": workflow_request_inventory,
+        "authenticated_behavior_proof": authenticated_behavior_proof,
         "discovered_endpoints": [{"url": item.url, "method": item.method, "type": item.endpoint_type, "source": item.source, "metadata": item.metadata_json} for item in discovered_endpoints],
         "discovered_forms": [{"endpoint": item.endpoint, "name": item.name, "source": item.source, "metadata": item.metadata_json} for item in discovered_parameters if item.location == "form"],
         "discovered_auth_endpoints": [{"type": item.flow_type, "url": item.url, "evidence": item.evidence} for item in discovered_auth_flows],
@@ -458,7 +504,19 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
                 "retest_status": item.retest_status or "not_retested",
                 "fixed_at": item.fixed_at.isoformat() if item.fixed_at else None,
             }
-            for item in findings
+            for item in executive_findings
+        ],
+        "observations": [
+            {
+                "id": item.id,
+                "title": item.title,
+                "severity": item.severity,
+                "status": item.status,
+                "confidence": item.confidence or "observed",
+                "description": item.description,
+                "evidence_path": _finding_evidence_path(item, evidence),
+            }
+            for item in observations
         ],
         "manual_review_items": [
             {"id": item.id, "title": item.title, "endpoint": item.affected_endpoint, "parameter": item.parameter, "confidence": item.confidence}
@@ -467,10 +525,10 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
         ],
         "professional_report": True,
         "assessment_type": "Web/API penetration test",
-        "overall_risk_rating": _overall_risk(findings),
-        "findings_by_severity": _findings_by_severity(findings),
-        "business_impact_summary": _business_impact_summary(findings),
-        "key_risks": [item.title for item in findings if item.severity in {"critical", "high"}][:10],
+        "overall_risk_rating": _overall_risk(executive_findings),
+        "findings_by_severity": _findings_by_severity(executive_findings),
+        "business_impact_summary": _business_impact_summary(executive_findings),
+        "key_risks": [item.title for item in executive_findings if item.severity in {"critical", "high"}][:10],
         "recommended_next_steps": _recommended_next_steps(findings, execution_context),
         "scan_timeline": [
             {
@@ -497,7 +555,7 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
                 "cwe": item.cwe,
                 "owasp_category": item.owasp_category,
             }
-            for item in findings
+            for item in executive_findings
         ],
         "payload_attempts": [
             {
@@ -668,6 +726,20 @@ def _findings_by_severity(findings: list[Finding]) -> dict:
     return {severity: len([item for item in findings if item.severity == severity]) for severity in severities}
 
 
+def _is_executive_finding(finding: Finding) -> bool:
+    if getattr(finding, "finding_type", "finding") == "observation":
+        return False
+    if finding.severity == "info" or finding.status == "informational":
+        return False
+    if finding.confidence not in {"confirmed", "high"}:
+        return False
+    if not finding.affected_endpoint:
+        return False
+    if not (finding.business_impact and finding.remediation):
+        return False
+    return finding.status not in {"closed", "false_positive"}
+
+
 def _overall_risk(findings: list[Finding]) -> str:
     severities = {item.severity for item in findings if item.status not in {"closed", "false_positive"}}
     if "critical" in severities:
@@ -801,6 +873,15 @@ def generate_html_report(session: Session, project_name: str | None = None, scan
         "</tr>"
         for item in payload.get("finding_index") or []
     )
+    observation_rows = "\n".join(
+        "<tr>"
+        f"<td>{escape(str(item.get('title') or ''))}</td>"
+        f"<td>{escape(str(item.get('confidence') or 'observed'))}</td>"
+        f"<td>{escape(str(item.get('status') or ''))}</td>"
+        f"<td>{escape(str(item.get('description') or ''))}</td>"
+        "</tr>"
+        for item in payload.get("observations") or []
+    )
     payload_rows = "\n".join(
         "<tr>"
         f"<td>{escape(str(item.get('vulnerability_type') or ''))}</td>"
@@ -882,10 +963,16 @@ def generate_html_report(session: Session, project_name: str | None = None, scan
       <tr><th>Prompt</th><td>{escape(str(payload.get("prompt") or ""))}</td></tr>
       <tr><th>Engagement mode</th><td>{escape(str((payload.get("scan") or {}).get("engagement_mode") or "black_box"))}</td></tr>
       <tr><th>Target source</th><td>{escape(str(payload.get("target_source") or ""))}</td></tr>
+      <tr><th>Target classification</th><td><pre>{escape(json.dumps(payload.get("target_classification"), indent=2, sort_keys=True))}</pre></td></tr>
+      <tr><th>Pentest phase order</th><td><pre>{escape(json.dumps(payload.get("pentest_phase_order"), indent=2, sort_keys=True))}</pre></td></tr>
       <tr><th>Environment assumption</th><td>{escape(str(payload.get("environment_assumption") or ""))}</td></tr>
       <tr><th>AI provider</th><td>{escape(str(payload.get("ai_provider") or ""))}</td></tr>
       <tr><th>AI model</th><td>{escape(str(payload.get("ai_model") or ""))}</td></tr>
       <tr><th>AI planning status</th><td>{escape(str(payload.get("ai_planning_status") or ""))}</td></tr>
+      <tr><th>AI planning warning</th><td>{escape(str(payload.get("ai_planning_warning") or ""))}</td></tr>
+      <tr><th>AI planning error</th><td>{escape(str(payload.get("ai_planning_error") or ""))}</td></tr>
+      <tr><th>AI available</th><td>{escape(str(payload.get("ai_available")))}</td></tr>
+      <tr><th>Deterministic mode</th><td>{escape(str(payload.get("deterministic_mode")))}</td></tr>
       <tr><th>AI timeout setting</th><td>{escape(str(payload.get("ai_timeout_seconds") or ""))}s</td></tr>
       <tr><th>AI prompt</th><td>{escape(str(payload.get("ai_prompt") or ""))}</td></tr>
       <tr><th>AI scan plan</th><td><pre>{escape(json.dumps(payload.get("ai_scan_plan"), indent=2, sort_keys=True))}</pre></td></tr>
@@ -896,6 +983,9 @@ def generate_html_report(session: Session, project_name: str | None = None, scan
       <tr><th>AI review consistency</th><td>{escape(str(payload.get("ai_review_consistency") or ""))}</td></tr>
       <tr><th>AI review consistency warnings</th><td><pre>{escape(json.dumps(payload.get("ai_review_consistency_warnings"), indent=2, sort_keys=True))}</pre></td></tr>
       <tr><th>AI local fallback summary used</th><td>{escape(str(payload.get("ai_local_fallback_summary_used")))}</td></tr>
+      <tr><th>AI decision memory</th><td><pre>{escape(json.dumps(payload.get("ai_decision_memory"), indent=2, sort_keys=True))}</pre></td></tr>
+      <tr><th>Coverage blockers</th><td><pre>{escape(json.dumps(payload.get("coverage_blockers"), indent=2, sort_keys=True))}</pre></td></tr>
+      <tr><th>Auth coverage blocker</th><td>{escape(str(payload.get("auth_coverage_blocker_message") or ""))}</td></tr>
       <tr><th>AI call runs</th><td><pre>{escape(json.dumps(payload.get("ai_call_runs"), indent=2, sort_keys=True))}</pre></td></tr>
       <tr><th>AI finding summary</th><td><pre>{escape(json.dumps(payload.get("ai_finding_summary"), indent=2, sort_keys=True))}</pre></td></tr>
       <tr><th>Parsed intent</th><td><pre>{escape(json.dumps(payload.get("parsed_intent"), indent=2, sort_keys=True))}</pre></td></tr>
@@ -926,6 +1016,10 @@ def generate_html_report(session: Session, project_name: str | None = None, scan
       <tr><th>Not applicable test cases</th><td><pre>{escape(json.dumps(payload.get("not_applicable_test_cases"), indent=2, sort_keys=True))}</pre></td></tr>
       <tr><th>Missing prerequisite test cases</th><td><pre>{escape(json.dumps(payload.get("missing_prerequisite_test_cases"), indent=2, sort_keys=True))}</pre></td></tr>
       <tr><th>Discovered URLs</th><td><pre>{escape(json.dumps(payload.get("discovered_urls"), indent=2, sort_keys=True))}</pre></td></tr>
+      <tr><th>Endpoint inventory</th><td><pre>{escape(json.dumps(payload.get("endpoint_inventory"), indent=2, sort_keys=True))}</pre></td></tr>
+      <tr><th>Response analysis memory</th><td><pre>{escape(json.dumps(payload.get("response_analysis"), indent=2, sort_keys=True))}</pre></td></tr>
+      <tr><th>Workflow request inventory</th><td><pre>{escape(json.dumps(payload.get("workflow_request_inventory"), indent=2, sort_keys=True))}</pre></td></tr>
+      <tr><th>Authenticated behavior proof</th><td><pre>{escape(json.dumps(payload.get("authenticated_behavior_proof"), indent=2, sort_keys=True))}</pre></td></tr>
       <tr><th>Discovered endpoints</th><td><pre>{escape(json.dumps(payload.get("discovered_endpoints"), indent=2, sort_keys=True))}</pre></td></tr>
       <tr><th>Discovered forms</th><td><pre>{escape(json.dumps(payload.get("discovered_forms"), indent=2, sort_keys=True))}</pre></td></tr>
       <tr><th>Discovered auth endpoints</th><td><pre>{escape(json.dumps(payload.get("discovered_auth_endpoints"), indent=2, sort_keys=True))}</pre></td></tr>
@@ -939,10 +1033,16 @@ def generate_html_report(session: Session, project_name: str | None = None, scan
     <thead><tr><th>Phase</th><th>Status</th><th>Start</th><th>End</th><th>Duration ms</th><th>Agent</th><th>Notes</th></tr></thead>
     <tbody>{timeline_rows or '<tr><td colspan="7">No phase records.</td></tr>'}</tbody>
   </table>
-  <h2>Finding Index</h2>
+  <h2>Executive Findings</h2>
+  <p>{'No confirmed vulnerabilities were produced. Coverage may be incomplete if authenticated behavior proof or workflow request inventory was not available for selected authorization tests.' if not payload.get('finding_index') else ''}</p>
   <table>
     <thead><tr><th>Finding ID</th><th>Title</th><th>Severity</th><th>Status</th><th>Confidence</th><th>Affected endpoint</th><th>Agent</th><th>CWE/OWASP</th></tr></thead>
-    <tbody>{finding_index_rows or '<tr><td colspan="8">No findings recorded.</td></tr>'}</tbody>
+    <tbody>{finding_index_rows or '<tr><td colspan="8">No confirmed vulnerabilities recorded.</td></tr>'}</tbody>
+  </table>
+  <h2>Observations</h2>
+  <table>
+    <thead><tr><th>Title</th><th>Confidence</th><th>Status</th><th>Description</th></tr></thead>
+    <tbody>{observation_rows or '<tr><td colspan="4">No observations recorded.</td></tr>'}</tbody>
   </table>
   <h2>Findings</h2>
   <table>
@@ -971,6 +1071,12 @@ def generate_html_report(session: Session, project_name: str | None = None, scan
   </table>
   <h2>Ollama / AI Activity</h2>
   <pre>{escape(json.dumps(payload.get("ai_call_runs"), indent=2, sort_keys=True))}</pre>
+  <h2>AI Trace Index</h2>
+  <pre>{escape(json.dumps(payload.get("ai_trace_index"), indent=2, sort_keys=True))}</pre>
+  <h2>Agent Reactions</h2>
+  <pre>{escape(json.dumps(payload.get("agent_reactions"), indent=2, sort_keys=True))}</pre>
+  <h2>Request Map</h2>
+  <pre>{escape(json.dumps(payload.get("request_map"), indent=2, sort_keys=True))}</pre>
   <h2>Agent Activity</h2>
   <pre>{escape(json.dumps(payload.get("agent_jobs"), indent=2, sort_keys=True))}</pre>
   <h2>Tool Runs</h2>
@@ -993,6 +1099,34 @@ def generate_html_report(session: Session, project_name: str | None = None, scan
         )
     )
     return path
+
+
+def _read_scan_json(scan_id: int, relative_path: str, fallback: dict) -> dict:
+    path = get_settings().evidence_dir / f"scan-{scan_id}" / relative_path
+    if not path.exists():
+        return fallback
+    try:
+        value = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except Exception as exc:
+        return {"error": str(exc), **fallback}
+    return value if isinstance(value, dict) else fallback
+
+
+def _read_scan_jsonl(scan_id: int, relative_path: str) -> list[dict]:
+    path = get_settings().evidence_dir / f"scan-{scan_id}" / relative_path
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except Exception:
+            value = {"raw": line[:2000]}
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows
 
 
 def generate_report(session: Session, project_name: str | None, format_: str, scan_id: int | None = None) -> Path:

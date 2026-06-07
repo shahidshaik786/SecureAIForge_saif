@@ -38,8 +38,10 @@ CONTINUABLE = {"stopped", "paused", "ready", "completed", "worker_stale", "runni
 
 def scan_actions(session: Session, scan: Scan) -> dict[str, dict]:
     status = _effective_status(session, scan)
-    active_process = _active_process(session, scan.id) if status in RUNNING | STARTING else None
-    resumable = status in RESUMABLE and not active_process
+    snapshot = status_snapshot(session, scan.id)
+    worker_status = str(snapshot.get("worker_status") or "").lower()
+    active_process = _active_process(session, scan.id) if worker_status in {"active", "stopping"} else None
+    resumable = (worker_status in {"stale", "failed"} or status in RESUMABLE) and worker_status not in {"active", "stopping"}
     reportable = _has_reportable_data(session, scan.id)
     auth_context = _has_auth_context(session, scan.id, scan)
     account_context = _has_account_context(session, scan.id, scan)
@@ -48,10 +50,11 @@ def scan_actions(session: Session, scan: Scan) -> dict[str, dict]:
     missing_prerequisites = _missing_prerequisites_count(session, scan.id)
     actions = {
         "live_monitor": ButtonState(True, label="Live Monitor", css_class="btn-secondary"),
-        "pause": ButtonState(status in RUNNING, None if status in RUNNING else "Pause is available only for running scans.", "Pause", "btn-warning"),
-        "resume": ButtonState(resumable, None if resumable else "Resume is available only for recoverable scans with no active tracked worker. Stop or Force Stop the current worker first.", "Resume", "btn-success"),
+        "pause": ButtonState(worker_status == "active", None if worker_status == "active" else "Pause is available only for active scans.", "Pause", "btn-warning"),
+        "resume": ButtonState(resumable, None if resumable else f"Resume is disabled while worker status is {worker_status or status}.", "Resume", "btn-success"),
         "stop": ButtonState(status in RUNNING | STARTING, None if status in RUNNING | STARTING else "Stop is available only while a scan is running, planning, or resuming.", "Stop", "btn-danger", True),
         "force_stop": ButtonState(bool(active_process), None if active_process else "Force Stop requires an active tracked worker process.", "Force Stop", "btn-danger", True),
+        "restart_worker": ButtonState(status in {"worker_stale", "execution_error", "stopped", "failed_system"} and not active_process, None if status in {"worker_stale", "execution_error", "stopped", "failed_system"} and not active_process else "Restart worker is available only for stale/error/stopped scans with no live worker.", "Restart Worker", "btn-secondary"),
         "continue_phase": ButtonState(status in CONTINUABLE, None if status != "running" else "Cannot continue phase while scan is running.", "Continue Phase", "btn-secondary"),
         "resolve_prerequisites": ButtonState(missing_prerequisites > 0 and status not in RUNNING | STARTING, None if missing_prerequisites > 0 else "No missing prerequisite tool runs are currently recorded.", "Resolve Prerequisites & Retry", "btn-secondary"),
         "generate_report": ButtonState(reportable, None if reportable else "Generate Report requires completed phases, findings, tool runs, or evidence.", "Generate Report", "btn-secondary"),
@@ -81,6 +84,7 @@ def validate_scan_action(session: Session, scan: Scan, action: str) -> tuple[boo
         "continue": "continue_phase",
         "run-phase": "continue_phase",
         "resolve-prerequisites": "resolve_prerequisites",
+        "restart-worker": "restart_worker",
         "report": "generate_report",
     }
     state = get_button_state(session, scan, mapping.get(action, action))
@@ -120,7 +124,11 @@ def _effective_status(session: Session, scan: Scan) -> str:
 
 def _active_process(session: Session, scan_id: int) -> ScanProcess | None:
     process = session.scalar(select(ScanProcess).where(ScanProcess.scan_id == scan_id).order_by(ScanProcess.id.desc()).limit(1))
-    return process if process and process.status in {"started", "running"} and process.pid else None
+    try:
+        snapshot = status_snapshot(session, scan_id)
+        return process if process and snapshot.get("worker_status") in {"active", "stopping"} and process.pid else None
+    except Exception:
+        return process if process and process.status in {"started", "running", "planning", "stopping"} and process.pid else None
 
 
 def _has_reportable_data(session: Session, scan_id: int) -> bool:

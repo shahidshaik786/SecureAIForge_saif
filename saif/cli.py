@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import time
+import traceback
 from datetime import datetime, timezone
 
 import typer
@@ -12,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 
 from saif.ai.gate import (
+    AIContext,
     AIPrecheckError,
     OllamaModelMissingError,
     ai_error_message,
@@ -19,7 +21,7 @@ from saif.ai.gate import (
     record_failed_precheck,
 )
 from saif.config import get_settings
-from saif.db.models import AgentJob, AiCallRun, Evidence, Finding, PayloadAttempt, Project, Report, RunStatus, Scan, ScanEvent, ScanPhase, ScanProcess, ScanStatus, Target, TestCase, ToolRun
+from saif.db.models import AgentJob, AiCallRun, AuthenticatedSession, Credential, Evidence, Finding, PayloadAttempt, Project, Report, RunStatus, Scan, ScanEvent, ScanPhase, ScanProcess, ScanStatus, Target, TestCase, ToolRun
 from saif.db import session_scope
 from saif.registry.testcases import load_testcases
 from saif.registry.tools import check_tool, load_tools
@@ -44,6 +46,7 @@ scan_app = typer.Typer(help="Scan management commands")
 report_app = typer.Typer(help="Reporting commands")
 dashboard_app = typer.Typer(help="Local dashboard")
 logs_app = typer.Typer(help="Runtime logs")
+auth_app = typer.Typer(help="Authentication and session diagnostics")
 finding_app = typer.Typer(help="Finding retest and closure workflow")
 fix_app = typer.Typer(help="Source-assisted remediation guidance")
 
@@ -55,10 +58,20 @@ app.add_typer(scan_app, name="scan")
 app.add_typer(report_app, name="report")
 app.add_typer(dashboard_app, name="dashboard")
 app.add_typer(logs_app, name="logs")
+app.add_typer(auth_app, name="auth")
 app.add_typer(finding_app, name="finding")
 app.add_typer(fix_app, name="fix")
 
 console = Console(width=180)
+
+
+DETERMINISTIC_EXECUTION_PROFILES = {
+    "destructive-full-scan",
+    "authenticated-full-scan",
+    "auth-authorization-debug",
+    "standard-non-destructive",
+    "safe-enumeration",
+}
 
 
 def _source_from_cli_arg(value: str | None) -> str:
@@ -259,11 +272,11 @@ def tools_status() -> None:
 
 
 @tools_app.command("refresh")
-def tools_refresh(install_missing: bool = typer.Option(False, "--install-missing")) -> None:
+def tools_refresh(install_missing: bool = typer.Option(False, "--install-missing"), browser: bool = typer.Option(False, "--browser")) -> None:
     """Refresh tool registry and optionally install missing supported tools."""
     try:
         with session_scope() as session:
-            preparation = refresh_tool_registry(session, install_missing=install_missing, console=console)
+            preparation = refresh_tool_registry(session, install_missing=install_missing, console=console, browser=browser)
             rows = tool_registry_snapshot(session)
     except ProgrammingError as exc:
         _handle_db_programming_error(exc)
@@ -288,10 +301,10 @@ def tools_refresh(install_missing: bool = typer.Option(False, "--install-missing
 
 
 @app.command("install-tools")
-def install_tools() -> None:
+def install_tools(browser: bool = typer.Option(False, "--browser")) -> None:
     """Install missing supported external tools for WSL/Linux."""
     print_tool_summary(console)
-    preparation = install_missing_supported_tools(console)
+    preparation = install_missing_supported_tools(console, browser=browser)
     if preparation.attempts:
         table = Table(title="SAIF Tool Installation")
         table.add_column("tool")
@@ -380,6 +393,16 @@ def scan_start(
     allow_payload_testing: bool = typer.Option(False, "--allow-payload-testing"),
     allow_rate_limit_testing: bool = typer.Option(False, "--allow-rate-limit-testing"),
     selected_test_categories: str | None = typer.Option(None, "--selected-test-categories"),
+    protected_endpoint: list[str] | None = typer.Option(None, "--protected-endpoint"),
+    har_file: str | None = typer.Option(None, "--har-file"),
+    known_authenticated_request: list[str] | None = typer.Option(None, "--known-authenticated-request"),
+    login_url: str | None = typer.Option(None, "--login-url"),
+    username_field: str | None = typer.Option(None, "--username-field"),
+    password_field: str | None = typer.Option(None, "--password-field"),
+    submit_selector: str | None = typer.Option(None, "--submit-selector"),
+    post_login_action: str | None = typer.Option(None, "--post-login-action"),
+    cookie_file: str | None = typer.Option(None, "--cookie-file"),
+    workflow_script: str | None = typer.Option(None, "--workflow-script"),
     debug: bool = typer.Option(False, "--debug"),
 ) -> None:
     """Start an AI-planned scan for a project."""
@@ -437,6 +460,18 @@ def scan_start(
                     allow_payload_testing=allow_payload_testing,
                     allow_rate_limit_testing=allow_rate_limit_testing,
                     selected_test_categories=_split_csv(selected_test_categories),
+                    known_protected_endpoints=_parse_known_protected_endpoints(protected_endpoint or []),
+                    har_file=har_file,
+                    known_authenticated_requests=known_authenticated_request or [],
+                    login_workflow_hints={
+                        "login_url": login_url,
+                        "username_field": username_field,
+                        "password_field": password_field,
+                        "submit_selector": submit_selector,
+                        "post_login_action": post_login_action,
+                        "cookie_file": cookie_file,
+                        "workflow_script": workflow_script,
+                    },
                 )
                 scan_id = scan.id
                 json_path = generate_report(session, project, "json")
@@ -469,6 +504,12 @@ def scan_run_existing(
     try:
         with session_scope() as session:
             scan = _load_scan_or_exit(session, scan_id)
+            active_pid = _active_worker_pid(session, scan_id)
+            if active_pid:
+                message = f"Scan already has active worker PID {active_pid}"
+                _append_worker_log(scan_id, message, level="WARNING")
+                emit_progress(session, scan, message, level="WARNING", phase=scan.current_phase or "worker", agent="orchestrator_agent", event_type="worker_already_running", context={"pid": active_pid}, console=console, live=True)
+                raise typer.Exit(code=0)
             target = scan_target(session, scan)
             if not target:
                 console.print(f"ERROR: scan {scan_id} has no target attached through its project.")
@@ -493,6 +534,7 @@ def scan_run_existing(
                 console=console,
                 live=True,
             )
+            _append_worker_log(scan.id, f"worker process started pid={os.getpid()} args=scan run-existing --scan-id {scan.id}", level="INFO")
             created_event = session.scalar(
                 select(ScanEvent)
                 .where(ScanEvent.scan_id == scan.id, ScanEvent.event_type == "scan_created_from_dashboard")
@@ -511,6 +553,10 @@ def scan_run_existing(
                     "enable_destructive_tests": bool(scan.enable_destructive_tests),
                     "destructive_test_policy": scan.destructive_test_policy or dashboard_options.get("destructive_test_policy"),
                     "destructive_method_policy": scan.destructive_method_policy or dashboard_options.get("destructive_method_policy"),
+                    "account_source": dashboard_options.get("account_source") or scan.auth_mode,
+                    "auth_mode": scan.auth_mode or dashboard_options.get("auth_mode"),
+                    "credentials_path": scan.credentials_path or dashboard_options.get("credentials_path"),
+                    "required_user_count": dashboard_options.get("required_user_count") or 2,
                 }
             )
             try:
@@ -545,6 +591,7 @@ def scan_run_existing(
                 _mark_scan_worker_completed(scan.id, status="failed", exit_code=1)
                 raise typer.Exit(code=1)
             scan.scan_config = dashboard_options
+            _append_worker_log(scan.id, f"loaded scan config execution_profile={dashboard_options.get('execution_profile')} profile={dashboard_options.get('profile')} account_source={dashboard_options.get('account_source')}", level="INFO")
             seed_foundation(session, "api-security" if scan.profile == "auto" else scan.profile)
             emit_progress(session, scan, "precheck started", phase="precheck", agent="orchestrator_agent", event_type="precheck_started", console=console, live=True)
             run_doctor(target, console=console)
@@ -585,26 +632,133 @@ def scan_run_existing(
             )
             parsed_intent = parse_prompt(prompt)
             selected_tools = select_tools(parsed_intent, target)
+            deterministic_workflow = _has_deterministic_workflow(dashboard_options, workflow_phases)
+            emit_progress(
+                session,
+                scan,
+                "AI planning attempted",
+                phase="ai_planning",
+                agent="ai_planner_agent",
+                tool="ollama",
+                event_type="ai_planning_attempted",
+                context={"execution_profile": dashboard_options.get("execution_profile"), "deterministic_workflow": deterministic_workflow},
+                console=console,
+                live=True,
+            )
             try:
                 ai_context = build_ai_scan_plan(prompt=prompt, target_url=target, parsed_intent=parsed_intent, selected_tools=selected_tools, debug=debug)
             except AIPrecheckError as exc:
-                scan.status = ScanStatus.FAILED_AI_TIMEOUT.value if getattr(exc, "code", "") == "AI_PLANNING_TIMEOUT" else ScanStatus.FAILED_PRECHECK.value
-                scan.completed_at = datetime.now(timezone.utc)
+                if deterministic_workflow:
+                    ai_context = _advisory_ai_context(
+                        prompt=prompt,
+                        target=target,
+                        selected_tools=selected_tools,
+                        execution_profile=str(dashboard_options.get("execution_profile") or ""),
+                        workflow_phases=workflow_phases,
+                        exc=exc,
+                    )
+                    _append_worker_log(scan.id, f"AI planning failed/warned code={getattr(exc, 'code', 'AI_PRECHECK_ERROR')} reason={exc}", level="WARNING")
+                    emit_progress(
+                        session,
+                        scan,
+                        "AI planning unavailable; continuing deterministic workflow",
+                        level="WARNING",
+                        phase="ai_planning",
+                        agent="ai_planner_agent",
+                        tool="ollama",
+                        event_type="ai_planning_not_used",
+                        context={
+                            "code": getattr(exc, "code", "AI_PRECHECK_ERROR"),
+                            "message": str(exc),
+                            "ai_planning_status": "warning",
+                            "ai_planning_error": str(exc),
+                            "ai_planning_warning": "Ollama did not return valid executable test plan; deterministic workflow was used.",
+                            "ai_available": False,
+                            "deterministic_mode": True,
+                            "execution_profile": dashboard_options.get("execution_profile"),
+                            "workflow_phases": workflow_phases,
+                        },
+                        console=console,
+                        live=True,
+                    )
+                    emit_progress(
+                        session,
+                        scan,
+                        "deterministic workflow continued",
+                        phase="precheck",
+                        agent="orchestrator_agent",
+                        event_type="deterministic_workflow_continued",
+                        context={"execution_profile": dashboard_options.get("execution_profile"), "phases": workflow_phases},
+                        console=console,
+                        live=True,
+                    )
+                    if workflow_phases:
+                        emit_progress(
+                            session,
+                            scan,
+                            f"first deterministic phase started: {workflow_phases[0]}",
+                            phase=workflow_phases[0],
+                            agent="orchestrator_agent",
+                            event_type="phase_started",
+                            context={"phase": workflow_phases[0], "deterministic_mode": True},
+                            console=console,
+                            live=True,
+                        )
+                else:
+                    scan.status = ScanStatus.FAILED_AI_TIMEOUT.value if getattr(exc, "code", "") == "AI_PLANNING_TIMEOUT" else ScanStatus.FAILED_PRECHECK.value
+                    scan.completed_at = datetime.now(timezone.utc)
+                    emit_progress(
+                        session,
+                        scan,
+                        f"AI planning failed: {exc}",
+                        level="ERROR",
+                        phase="ai_planning",
+                        agent="ai_planner_agent",
+                        tool="ollama",
+                        event_type="error",
+                        context={"code": getattr(exc, "code", "AI_PRECHECK_ERROR"), "message": str(exc)},
+                        console=console,
+                        live=True,
+                    )
+                    console.print(ai_error_message(exc))
+                    raise typer.Exit(code=1)
+            else:
                 emit_progress(
                     session,
                     scan,
-                    f"AI planning failed: {exc}",
-                    level="ERROR",
+                    "AI planning completed",
                     phase="ai_planning",
                     agent="ai_planner_agent",
                     tool="ollama",
-                    event_type="error",
-                    context={"code": getattr(exc, "code", "AI_PRECHECK_ERROR"), "message": str(exc)},
+                    event_type="ai_planning_completed",
+                    context={"deterministic_workflow": deterministic_workflow},
                     console=console,
                     live=True,
                 )
-                console.print(ai_error_message(exc))
-                raise typer.Exit(code=1)
+                if deterministic_workflow:
+                    emit_progress(
+                        session,
+                        scan,
+                        "deterministic workflow continued",
+                        phase="precheck",
+                        agent="orchestrator_agent",
+                        event_type="deterministic_workflow_continued",
+                        context={"execution_profile": dashboard_options.get("execution_profile"), "phases": workflow_phases},
+                        console=console,
+                        live=True,
+                    )
+                    if workflow_phases:
+                        emit_progress(
+                            session,
+                            scan,
+                            f"first deterministic phase started: {workflow_phases[0]}",
+                            phase=workflow_phases[0],
+                            agent="orchestrator_agent",
+                            event_type="phase_started",
+                            context={"phase": workflow_phases[0], "deterministic_mode": True},
+                            console=console,
+                            live=True,
+                        )
 
             scan, selected_tools, tool_results, parsed_intent, _ = run_prompt_scan(
                 session,
@@ -632,6 +786,7 @@ def scan_run_existing(
                 selected_test_categories=list(dashboard_options.get("selected_test_categories") or []),
                 existing_scan=scan,
             )
+            _append_worker_log(scan.id, f"selected tools={','.join(selected_tools)}", level="INFO")
             json_path = generate_report(session, None, "json", scan_id=scan.id)
             html_path = generate_report(session, None, "html", scan_id=scan.id)
             _print_run_summary(
@@ -650,23 +805,50 @@ def scan_run_existing(
     except ProgrammingError as exc:
         _handle_db_programming_error(exc)
     except SQLAlchemyError as exc:
-        _mark_scan_worker_failed(scan_id, f"Database error: {exc}")
+        _append_worker_log(scan_id, "database error\n" + traceback.format_exc())
+        _mark_scan_worker_failed(scan_id, f"Database error: {exc}", traceback_text=traceback.format_exc())
         console.print(f"ERROR: scan {scan_id} failed with a database error. Check .saif/logs/scan-{scan_id}.log")
         raise typer.Exit(code=1) from exc
     except Exception as exc:
-        _mark_scan_worker_failed(scan_id, f"Worker error: {exc}")
+        _append_worker_log(scan_id, "worker crashed\n" + traceback.format_exc())
+        _mark_scan_worker_failed(scan_id, f"Worker error: {exc}", traceback_text=traceback.format_exc())
         console.print(f"ERROR: scan {scan_id} worker failed. Check .saif/logs/scan-{scan_id}.log")
         raise typer.Exit(code=1) from exc
 
 
-def _mark_scan_worker_failed(scan_id: int, message: str) -> None:
+def _append_worker_log(scan_id: int, message: str, *, level: str = "ERROR") -> None:
+    try:
+        path = get_settings().log_dir / f"scan-{scan_id}.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} {level.upper()} scan={scan_id} {message}\n")
+    except Exception:
+        pass
+
+
+def _mark_scan_worker_failed(scan_id: int, message: str, traceback_text: str | None = None) -> None:
     try:
         with session_scope() as session:
             scan = session.get(Scan, scan_id)
             if scan:
-                scan.status = ScanStatus.FAILED_SYSTEM.value
+                scan.status = ScanStatus.EXECUTION_ERROR.value
                 scan.completed_at = datetime.now(timezone.utc)
+                scan.current_phase = "failed"
+                scan.progress_message = f"worker crashed: {message[:160]}"
                 phase = scan.current_phase or "worker"
+                emit_progress(
+                    session,
+                    scan,
+                    message[:900],
+                    level="ERROR",
+                    phase=phase,
+                    agent=scan.current_agent or "orchestrator_agent",
+                    tool=scan.current_tool,
+                    event_type="worker_crashed",
+                    context={"error": message[:2000], "traceback": (traceback_text or "")[-6000:]},
+                    console=console,
+                    live=True,
+                )
                 if phase in {"created", "precheck", "ai_planning", "worker"}:
                     emit_progress(
                         session,
@@ -713,7 +895,7 @@ def _mark_scan_worker_failed(scan_id: int, message: str) -> None:
                 .order_by(ScanProcess.id.desc())
             )
             if process:
-                process.status = "failed"
+                process.status = "crashed"
                 process.ended_at = datetime.now(timezone.utc)
                 process.exit_code = 1
     except Exception:
@@ -736,6 +918,25 @@ def _mark_scan_worker_completed(scan_id: int, *, status: str = "completed", exit
         pass
 
 
+def _pid_alive(pid: int | None) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
+def _active_worker_pid(session, scan_id: int) -> int | None:
+    processes = session.scalars(select(ScanProcess).where(ScanProcess.scan_id == scan_id).order_by(ScanProcess.id.desc()).limit(5)).all()
+    current_pid = os.getpid()
+    for process in processes:
+        if process.pid != current_pid and process.status in {"started", "running"} and _pid_alive(process.pid):
+            return process.pid
+    return None
+
+
 def _load_scan_or_exit(session, scan_id: int) -> Scan:
     scan = session.get(Scan, scan_id)
     if not scan:
@@ -747,6 +948,10 @@ def _load_scan_or_exit(session, scan_id: int) -> Scan:
 def _expanded_workflow_phases(scan_config: dict) -> list[str]:
     if scan_config.get("execution_profile") == "destructive-full-scan":
         return [
+            "enumeration",
+            "endpoint_inventory",
+            "request_templates",
+            "auth_endpoint_classification",
             "account_provisioning",
             "login_session_user1",
             "login_session_user2",
@@ -775,6 +980,45 @@ def _expanded_workflow_phases(scan_config: dict) -> list[str]:
             "report_generation",
         ]
     return ["enumeration", "api_discovery", "report_generation"]
+
+
+def _has_deterministic_workflow(scan_config: dict, workflow_phases: list[str]) -> bool:
+    execution_profile = str(scan_config.get("execution_profile") or "").strip()
+    return bool(workflow_phases) and execution_profile in DETERMINISTIC_EXECUTION_PROFILES
+
+
+def _advisory_ai_context(
+    *,
+    prompt: str,
+    target: str,
+    selected_tools: list[str],
+    execution_profile: str,
+    workflow_phases: list[str],
+    exc: AIPrecheckError,
+) -> AIContext:
+    return AIContext(
+        provider="Ollama",
+        model=get_settings().ollama_model,
+        base_url=get_settings().ollama_base_url,
+        prompt=prompt,
+        scan_plan={
+            "approved": True,
+            "mode": execution_profile,
+            "target": target,
+            "tools": selected_tools,
+            "test_cases": [],
+            "not_applicable": [],
+            "missing_prerequisites": [],
+            "ai_planning_status": "warning",
+            "ai_planning_error": str(exc),
+            "ai_planning_warning": "Ollama did not return valid executable test plan; deterministic workflow was used.",
+            "ai_available": False,
+            "deterministic_mode": True,
+            "deterministic_workflow_phases": workflow_phases,
+            "warning": "Ollama did not return valid executable test plan; deterministic workflow was used.",
+        },
+        ai_call_attempts=getattr(exc, "ai_call_attempts", []),
+    )
 
 
 def _scan_start_prompt(
@@ -824,6 +1068,20 @@ def _split_csv(value: str | None) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _parse_known_protected_endpoints(values: list[str]) -> list[dict]:
+    parsed = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        parts = text.split(None, 1)
+        if len(parts) == 2 and parts[0].upper() in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+            parsed.append({"method": parts[0].upper(), "path": parts[1].strip()})
+        else:
+            parsed.append({"method": "GET", "path": text})
+    return parsed
 
 
 @scan_app.command("pause")
@@ -902,6 +1160,129 @@ def scan_status(scan_id: int = typer.Option(..., "--scan-id")) -> None:
             console.print(table)
     except ProgrammingError as exc:
         _handle_db_programming_error(exc)
+
+
+@scan_app.command("debug")
+def scan_debug(scan_id: int = typer.Option(..., "--scan-id")) -> None:
+    """Print scan row, process row, recent events/tool runs, and runtime log tail."""
+    with session_scope() as session:
+        scan = _load_scan_or_exit(session, scan_id)
+        console.print(f"Scan #{scan_id}")
+        console.print(
+            {
+                "status": scan.status,
+                "current_phase": scan.current_phase,
+                "current_agent": scan.current_agent,
+                "current_tool": scan.current_tool,
+                "progress_message": scan.progress_message,
+                "last_activity_at": scan.last_activity_at,
+                "scan_config": scan.scan_config,
+            }
+        )
+        process = session.scalar(select(ScanProcess).where(ScanProcess.scan_id == scan_id).order_by(ScanProcess.id.desc()).limit(1))
+        pid_alive = False
+        if process and process.pid:
+            try:
+                os.kill(process.pid, 0)
+                pid_alive = True
+            except OSError:
+                pid_alive = False
+        console.print(f"Process: {process.status if process else 'none'} pid={process.pid if process else None} alive={pid_alive}")
+        events = session.scalars(select(ScanEvent).where(ScanEvent.scan_id == scan_id).order_by(ScanEvent.id.desc()).limit(50)).all()
+        console.print("Last 50 events:")
+        for event in reversed(events):
+            console.print(f"{event.id} {event.timestamp} {event.level} {event.event_type} phase={event.phase} tool={event.tool_name} {event.message}")
+        runs = session.scalars(select(ToolRun).where(ToolRun.scan_id == scan_id).order_by(ToolRun.id.desc()).limit(50)).all()
+        console.print("Last 50 tool runs:")
+        for run in reversed(runs):
+            console.print(f"{run.id} {run.tool_name} {run.status} started={run.started_at} completed={run.completed_at} output={run.output}")
+        log_path = get_settings().log_dir / f"scan-{scan_id}.log"
+        evidence_count = session.scalar(select(func.count(Evidence.id)).where(Evidence.scan_id == scan_id)) or 0
+        console.print(f"Evidence files count: {evidence_count}")
+        console.print(f"Runtime log path: {log_path}")
+        if log_path.exists():
+            console.print("Last 100 runtime log lines:")
+            for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-100:]:
+                console.print(line)
+        else:
+            console.print("Runtime log does not exist yet.")
+
+
+@auth_app.command("debug")
+def auth_debug(scan_id: int = typer.Option(..., "--scan-id")) -> None:
+    """Print deterministic authentication/session validation diagnostics."""
+    with session_scope() as session:
+        scan = _load_scan_or_exit(session, scan_id)
+        console.print(f"SAIF Auth Debug - scan #{scan_id}")
+        console.print(
+            {
+                "scan_status": scan.status,
+                "current_phase": scan.current_phase,
+                "execution_profile": (scan.scan_config or {}).get("execution_profile"),
+                "account_source": (scan.scan_config or {}).get("account_source") or scan.auth_mode,
+                "allow_account_generation": scan.allow_account_generation,
+                "allow_authenticated_testing": scan.allow_authenticated_testing,
+                "allow_authorization_testing": scan.allow_authorization_testing,
+            }
+        )
+        credentials = session.scalars(select(Credential).where(Credential.project_id == scan.project_id).order_by(Credential.id)).all()
+        console.print("Generated/configured users:")
+        for credential in credentials:
+            metadata = credential.metadata_json or {}
+            if metadata.get("scan_id") == scan.id or str(credential.label).startswith("generated-"):
+                console.print(
+                    {
+                        "label": credential.label,
+                        "username": credential.username,
+                        "role": credential.role,
+                        "signup_status": metadata.get("status"),
+                        "login_status": metadata.get("login_status"),
+                    }
+                )
+        sessions = session.scalars(select(AuthenticatedSession).where(AuthenticatedSession.scan_id == scan_id).order_by(AuthenticatedSession.id)).all()
+        console.print("Authenticated sessions:")
+        for auth_session in sessions:
+            metadata = auth_session.metadata_json or {}
+            token_validation = metadata.get("token_validation") or {}
+            token_metadata = metadata.get("token_metadata") or token_validation.get("token_metadata") or {}
+            console.print(
+                {
+                    "label": auth_session.credential_label,
+                    "username": auth_session.username,
+                    "login_status": auth_session.login_status,
+                    "session_status": auth_session.session_status,
+                    "token_field_detected": metadata.get("token_field_name"),
+                    "token_length": token_metadata.get("token_length"),
+                    "jwt_shape_valid": token_metadata.get("jwt_shape_valid"),
+                    "auth_header_mode": token_metadata.get("header_mode_used"),
+                    "token_source": token_validation.get("token_source") or ("db_secret" if auth_session.access_token_secret else "masked_or_missing"),
+                    "validation_url": token_validation.get("validation_url"),
+                    "validation_status": token_validation.get("status_code"),
+                    "final_reason": token_validation.get("reason"),
+                    "evidence_path": token_validation.get("evidence_path"),
+                }
+            )
+            for attempt in token_validation.get("candidates_tried") or []:
+                console.print(
+                    "  tried "
+                    + str(
+                        {
+                            "endpoint": attempt.get("endpoint"),
+                            "status_code": attempt.get("status_code"),
+                            "body_preview": str(attempt.get("body_preview") or "")[:220],
+                        }
+                    )
+                )
+        tool_runs = session.scalars(select(ToolRun).where(ToolRun.scan_id == scan_id, ToolRun.tool_name.in_(["account_provisioning", "login_session", "session_validation", "authenticated_crawling", "authorization_matrix", "idor_bola_bfla_planner"])).order_by(ToolRun.id.desc()).limit(30)).all()
+        console.print("Recent auth tool runs:")
+        for run in reversed(tool_runs):
+            output = run.output or {}
+            console.print(f"{run.id} {run.tool_name} status={run.status} reason={output.get('reason')}")
+        log_path = get_settings().log_dir / f"scan-{scan_id}.log"
+        console.print(f"Runtime log path: {log_path}")
+        if log_path.exists():
+            for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]:
+                console.print(line)
 
 
 @scan_app.command("watch")

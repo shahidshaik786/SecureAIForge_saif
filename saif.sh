@@ -209,7 +209,7 @@ case "$COMMAND" in
     run_saif testcases list --profile "${SAIF_PROFILE:-web-api}"
     ;;
   install-tools)
-    run_saif install-tools
+    run_saif install-tools "$@"
     ;;
   tools)
     subcommand="${1:-status}"

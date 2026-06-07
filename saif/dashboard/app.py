@@ -4,6 +4,8 @@ import secrets
 import subprocess
 import sys
 import logging
+import os
+import importlib.metadata
 from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -20,7 +22,10 @@ from saif.db import session_scope
 from saif.db.models import Finding, Scan, ScanProcess, ScanStatus
 from saif.services.progress import emit_progress
 from saif.services.scan_config import normalize_scan_config
+from saif.services.credentials import load_credentials
 from saif.services.targets import upsert_project_target
+from sqlalchemy import select, text
+from sqlalchemy.exc import ProgrammingError
 
 
 logger = logging.getLogger(__name__)
@@ -74,6 +79,25 @@ def _dashboard_context(session) -> dict:
     }
 
 
+def _migration_required_context(exc: Exception) -> dict:
+    return {
+        "page": "overview",
+        "overview": {},
+        "scans": [],
+        "dashboard_error": "Database migration required. Run ./saif.sh init-db",
+        "dashboard_error_detail": str(exc),
+    }
+
+
+def _dashboard_page(request: Request, builder):
+    try:
+        with session_scope() as session:
+            return _template_response(request, builder(session))
+    except ProgrammingError as exc:
+        logger.exception("Dashboard database schema is not current")
+        return _template_response(request, _migration_required_context(exc))
+
+
 def api_response(data, status_code: int = 200) -> JSONResponse:
     try:
         return JSONResponse(content=services.safe_json(data), status_code=status_code)
@@ -87,6 +111,32 @@ def api_response(data, status_code: int = 200) -> JSONResponse:
 
 def api_not_found(message: str) -> JSONResponse:
     return api_response({"ok": False, "error": "not_found", "message": message}, status_code=404)
+
+
+def _pid_alive(pid: int | None) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
+def _active_worker_for_scan(session, scan_id: int) -> ScanProcess | None:
+    processes = session.scalars(select(ScanProcess).where(ScanProcess.scan_id == scan_id).order_by(ScanProcess.id.desc()).limit(5)).all()
+    for process in processes:
+        if process.status in {"started", "running", "planning", "stopping"} and _pid_alive(process.pid):
+            return process
+    try:
+        from saif.services.progress import status_snapshot
+
+        snapshot = status_snapshot(session, scan_id)
+        if snapshot.get("worker_status") == "active":
+            return processes[0] if processes else None
+    except Exception:
+        pass
+    return None
 
 
 def _record_process(session, *, scan_id: int, process, command: list[str], log_path: str | None = None) -> dict:
@@ -106,6 +156,13 @@ def _record_process(session, *, scan_id: int, process, command: list[str], log_p
 def _start_background_command(command: list[str], *, scan_id: int | None = None, log_path: str | None = None) -> dict:
     if scan_id is None:
         raise ValueError("Cannot start scan worker without scan_id")
+    with session_scope() as session:
+        active = _active_worker_for_scan(session, scan_id)
+        if active:
+            scan = session.get(Scan, scan_id)
+            if scan:
+                emit_progress(session, scan, f"Scan already has active worker PID {active.pid}", event_type="scan_worker_already_running", context={"pid": active.pid})
+            return {"pid": active.pid, "status": "already_running", "message": f"Scan already has active worker PID {active.pid}"}
     log_handle = None
     if log_path:
         path = Path(log_path)
@@ -187,6 +244,10 @@ def _create_dashboard_scan(payload: dict) -> dict:
     profile = str(payload.get("profile") or "auto")
     engagement_mode = str(payload.get("engagement_mode") or payload.get("mode") or "black-box").replace("-", "_")
     destructive_policy = str(payload.get("destructive_test_policy") or payload.get("destructive_policy") or "detect_only")
+    account_source = str(payload.get("account_source") or payload.get("auth_mode") or "auto")
+    if account_source == "username_password":
+        account_source = "credentials_file"
+    required_user_count = int(payload.get("required_user_count") or 2)
     scan_options = normalize_scan_config(
         {
             "target": target,
@@ -197,8 +258,10 @@ def _create_dashboard_scan(payload: dict) -> dict:
             "enumeration_only": bool(payload.get("enumeration_only")),
             "debug": bool(payload.get("debug", True)),
             "execution_profile": payload.get("execution_profile"),
-            "auth_mode": payload.get("auth_mode") or "auto",
+            "account_source": account_source,
+            "auth_mode": account_source,
             "credentials_path": payload.get("credentials_path"),
+            "required_user_count": required_user_count,
             "source_path": payload.get("source_path"),
             "allow_account_generation": bool(payload.get("allow_account_generation")),
             "allow_authenticated_testing": bool(payload.get("allow_authenticated_testing")),
@@ -212,8 +275,31 @@ def _create_dashboard_scan(payload: dict) -> dict:
             "confirm_authorized": bool(payload.get("confirm_authorized")),
             "confirm_destructive_testing": bool(payload.get("confirm_destructive_testing")),
             "selected_test_categories": payload.get("selected_test_categories") or [],
+            "known_protected_endpoints": payload.get("known_protected_endpoints") or [],
+            "har_file": payload.get("har_file"),
+            "known_authenticated_requests": payload.get("known_authenticated_requests") or [],
+            "login_workflow_hints": payload.get("login_workflow_hints") or {},
         }
     )
+    if scan_options.get("execution_profile") == "auth-authorization-debug":
+        engagement_mode = "gray_box"
+        scan_options.update(
+            {
+                "engagement_mode": engagement_mode,
+                "account_source": "generated_test_accounts",
+                "auth_mode": "generated_test_accounts",
+                "allow_account_generation": True,
+                "allow_authenticated_testing": True,
+                "allow_authorization_testing": True,
+                "allow_test_owned_object_creation": True,
+                "allow_payload_testing": False,
+                "allow_rate_limit_testing": False,
+                "enable_destructive_tests": False,
+                "destructive_test_policy": "test_owned_only",
+                "destructive_method_policy": scan_options.get("destructive_method_policy") or "test_owned_only",
+                "required_user_count": 2,
+            }
+        )
     if scan_options.get("execution_profile") == "destructive-full-scan":
         if not scan_options.get("confirm_authorized"):
             raise ValueError("Target authorization confirmation is required for Destructive Test Cases - Full Authorized Scan.")
@@ -230,6 +316,16 @@ def _create_dashboard_scan(payload: dict) -> dict:
         scan_options["allow_rate_limit_testing"] = True
         scan_options["allow_test_owned_object_creation"] = True
         scan_options["enable_destructive_tests"] = True
+        scan_options["account_source"] = scan_options.get("account_source") or "generated_test_accounts"
+        scan_options["auth_mode"] = scan_options["account_source"]
+    if scan_options.get("destructive_test_policy") == "authenticated_full" and profile == "crapi" and account_source == "auto":
+        scan_options["account_source"] = "generated_test_accounts"
+        scan_options["auth_mode"] = "generated_test_accounts"
+        scan_options["allow_account_generation"] = True
+    if scan_options.get("account_source") == "credentials_file":
+        credentials_path = payload.get("credentials_path")
+        if not credentials_path or not load_credentials(Path(credentials_path)):
+            raise ValueError("Credentials file selected, but no valid credentials were found. Choose generated test accounts or provide a valid credentials file.")
     now = datetime.now(timezone.utc)
     with session_scope() as session:
         project_name = str(payload.get("project") or _dashboard_project_name(target, profile))
@@ -243,7 +339,7 @@ def _create_dashboard_scan(payload: dict) -> dict:
             credentials_path=payload.get("credentials_path"),
             source_path=payload.get("source_path"),
             scan_config=scan_options,
-            auth_mode=payload.get("auth_mode") or "auto",
+            auth_mode=scan_options.get("auth_mode") or "auto",
             destructive_method_policy=scan_options.get("destructive_method_policy"),
             enable_destructive_tests=bool(scan_options.get("enable_destructive_tests")),
             destructive_test_policy=scan_options.get("destructive_test_policy") or destructive_policy,
@@ -283,6 +379,8 @@ def _create_dashboard_scan(payload: dict) -> dict:
                 "allow_authorization_testing": bool(scan_options.get("allow_authorization_testing")),
                 "allow_payload_testing": bool(scan_options.get("allow_payload_testing")),
                 "allow_rate_limit_testing": bool(scan_options.get("allow_rate_limit_testing")),
+                "account_source": scan_options.get("account_source"),
+                "required_user_count": scan_options.get("required_user_count"),
                 "selected_test_categories": scan_options.get("selected_test_categories") or [],
             },
         )
@@ -291,19 +389,17 @@ def _create_dashboard_scan(payload: dict) -> dict:
 
 def create_app() -> FastAPI:
     validate_dashboard_assets()
-    app = FastAPI(title="SAIF Dashboard", version="0.1.0", dependencies=[Depends(require_auth)])
+    app = FastAPI(title="SAIF Dashboard", version=_version(), dependencies=[Depends(require_auth)])
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request):
-        with session_scope() as session:
-            return _template_response(request, _dashboard_context(session) | {"page": "overview", "overview": services.overview(session), "scans": services.scans(session)})
+        return _dashboard_page(request, lambda session: _dashboard_context(session) | {"page": "overview", "overview": services.overview(session), "scans": services.scans(session)})
 
     @app.get("/control", response_class=HTMLResponse)
     def control(request: Request):
-        with session_scope() as session:
-            return _template_response(request, _dashboard_context(session) | {"page": "control", "scans": services.scans(session)})
+        return _dashboard_page(request, lambda session: _dashboard_context(session) | {"page": "control", "scans": services.scans(session)})
 
     @app.get("/live", response_class=HTMLResponse)
     def live_latest(request: Request):
@@ -424,10 +520,51 @@ def require_auth(credentials: HTTPBasicCredentials | None = Depends(security)) -
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, headers={"WWW-Authenticate": "Basic"})
 
 
+def _version() -> str:
+    try:
+        return importlib.metadata.version("saif")
+    except Exception:
+        return "0.1.0"
+
+
+def _health_payload() -> dict:
+    db_status = "ok"
+    try:
+        with session_scope() as session:
+            session.execute(text("select 1"))
+    except Exception as exc:
+        db_status = "failed"
+        logger.exception("Dashboard health DB check failed")
+        try:
+            from saif.services.dashboard import _log_dashboard
+
+            _log_dashboard("health_check_failed", {"db": "failed", "error": str(exc)})
+        except Exception:
+            pass
+    payload = {
+        "status": "ok",
+        "dashboard": "running",
+        "db": db_status,
+        "version": _version(),
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        from saif.services.dashboard import _log_dashboard
+
+        _log_dashboard("health_check", payload)
+    except Exception:
+        pass
+    return payload
+
+
 def add_api_routes(app: FastAPI) -> None:
+    @app.get("/health")
+    def root_health():
+        return api_response(_health_payload())
+
     @app.get("/api/health")
     def health():
-        return api_response({"status": "ok", "service": "saif-dashboard"})
+        return api_response(_health_payload())
 
     @app.get("/api/scans")
     def api_scans():
@@ -458,6 +595,22 @@ def add_api_routes(app: FastAPI) -> None:
                 return api_response(services.scan_detail(session, scan_id)["coverage"])
             except ValueError:
                 return api_not_found(f"scan {scan_id} not found")
+
+    @app.get("/api/scans/{scan_id}/request-map")
+    def api_request_map(scan_id: int):
+        return api_response(services.request_map(scan_id).get("requests", []))
+
+    @app.get("/api/scans/{scan_id}/ai-trace-index")
+    def api_ai_trace_index(scan_id: int):
+        return api_response(services.ai_trace_index(scan_id).get("calls", []))
+
+    @app.get("/api/scans/{scan_id}/agent-reactions")
+    def api_agent_reactions(scan_id: int):
+        return api_response(services.agent_reactions(scan_id))
+
+    @app.get("/api/scans/{scan_id}/discovery-sources")
+    def api_discovery_sources(scan_id: int):
+        return api_response(services.discovery_sources(scan_id))
 
     @app.get("/api/scans/{scan_id}/logs/tail")
     def api_logs_tail(scan_id: int, lines: int = 100):
@@ -565,8 +718,20 @@ def add_api_routes(app: FastAPI) -> None:
 
     @app.post("/api/scans/{scan_id}/{action}")
     def api_scan_action(scan_id: int, action: str, phase: str | None = None):
-        if action not in {"pause", "resume", "stop", "stop-force", "continue", "run-phase", "resolve-prerequisites", "report"}:
+        if action not in {"pause", "resume", "stop", "stop-force", "continue", "run-phase", "resolve-prerequisites", "restart-worker", "report"}:
             raise HTTPException(404)
+        if action == "restart-worker":
+            with session_scope() as session:
+                scan = session.get(Scan, scan_id)
+                if not scan:
+                    return api_not_found(f"scan {scan_id} not found")
+                ok, reason = services.validate_scan_action(session, scan, action)
+                if not ok:
+                    return api_response({"ok": False, "error": reason, "scan_status": scan.status}, status_code=409)
+                scan.status = ScanStatus.RESUMING.value
+                emit_progress(session, scan, "worker restart requested", event_type="worker_restart_requested", context={"requested_by": "dashboard"})
+            worker = _start_background_command(_scan_worker_command(scan_id, debug=True), scan_id=scan_id, log_path=str(get_settings().log_dir / f"scan-{scan_id}.log"))
+            return api_response(worker | {"scan_id": scan_id, "live_url": f"/scans/{scan_id}/live"}, status_code=202)
         if action == "resolve-prerequisites":
             selected_phase = "authenticated_crawling"
             with session_scope() as session:

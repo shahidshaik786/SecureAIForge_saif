@@ -200,13 +200,13 @@ class OllamaClient:
 
 def _httpx_timeout(timeout_seconds: int | float) -> httpx.Timeout:
     settings = get_settings()
-    read_timeout = max(float(timeout_seconds), float(settings.ollama_read_timeout_seconds))
+    hard_timeout = float(timeout_seconds)
     return httpx.Timeout(
-        timeout=float(timeout_seconds),
-        connect=float(settings.ollama_connect_timeout_seconds),
-        read=read_timeout,
-        write=float(settings.ollama_connect_timeout_seconds),
-        pool=float(settings.ollama_connect_timeout_seconds),
+        timeout=hard_timeout,
+        connect=min(float(settings.ollama_connect_timeout_seconds), hard_timeout),
+        read=hard_timeout,
+        write=min(float(settings.ollama_connect_timeout_seconds), hard_timeout),
+        pool=min(float(settings.ollama_connect_timeout_seconds), hard_timeout),
     )
 
 

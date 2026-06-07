@@ -1,0 +1,1 @@
+"""Core scan intelligence primitives."""

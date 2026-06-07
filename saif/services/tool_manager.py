@@ -27,6 +27,7 @@ TOOL_DEPENDENCIES = {
     "ffuf_api_paths": "ffuf",
     "whatweb": "whatweb",
     "technology_fingerprint": "httpx",
+    "browser_authenticated_capture": "playwright",
 }
 
 APT_INSTALL_TOOLS = {
@@ -53,6 +54,7 @@ INSTALL_METHODS = {
     "curl": "apt",
     "katana": "go install",
     "httpx": "python package",
+    "playwright": "python package + chromium",
 }
 
 _APT_UPDATED = False
@@ -85,6 +87,7 @@ def check_runtime_tools() -> dict[str, bool]:
     _ensure_go_bin_path()
     return {
         "httpx": _python_package_installed("httpx"),
+        "playwright": _python_package_installed("playwright"),
         "nmap": bool(shutil.which("nmap")),
         "gobuster": bool(shutil.which("gobuster")),
         "ffuf": bool(shutil.which("ffuf")),
@@ -109,10 +112,10 @@ def print_tool_summary(console: Console | None = None) -> dict[str, bool]:
     return status
 
 
-def install_missing_supported_tools(console: Console | None = None) -> ToolPreparation:
+def install_missing_supported_tools(console: Console | None = None, browser: bool = False) -> ToolPreparation:
     console = console or Console()
     status = check_runtime_tools()
-    selected = ["http_client", "nmap_top_ports", "gobuster_dir", "ffuf_dir", "katana"]
+    selected = ["http_client", "nmap_top_ports", "gobuster_dir", "ffuf_dir", "katana"] + (["browser_authenticated_capture"] if browser else [])
     attempts: list[ToolInstallAttempt] = []
     _prepare_apt_batch([dependency for dependency, installed in status.items() if not installed and dependency in APT_INSTALL_TOOLS], console)
     for dependency, installed in status.items():
@@ -127,6 +130,8 @@ def install_missing_supported_tools(console: Console | None = None) -> ToolPrepa
                     reason="httpx is installed through ./saif.sh setup, not during tool installation.",
                 )
             )
+            continue
+        if dependency == "playwright" and not browser:
             continue
         console.print(f"Missing tool detected: {dependency}")
         console.print(f"Attempting install: {dependency}")
@@ -256,10 +261,25 @@ def _install_dependency(tool: str) -> ToolInstallAttempt:
             command_path=shutil.which("katana"),
             version=_dependency_version("katana"),
         )
+    if tool == "playwright":
+        install_pkg = _run_command([os.sys.executable, "-m", "pip", "install", "playwright"], timeout=max(600, get_settings().tool_timeout_seconds))
+        install_browser = _run_command([os.sys.executable, "-m", "playwright", "install", "chromium"], timeout=max(900, get_settings().tool_timeout_seconds)) if install_pkg.returncode == 0 else None
+        installed = install_pkg.returncode == 0 and install_browser is not None and install_browser.returncode == 0 and _python_package_installed("playwright")
+        output = (install_pkg.stdout + install_pkg.stderr + ((install_browser.stdout + install_browser.stderr) if install_browser else ""))[-4000:]
+        return ToolInstallAttempt(
+            tool="playwright",
+            attempted=True,
+            status="completed" if installed else "tool_install_failed",
+            reason=None if installed else _compact_error(output or "playwright install failed"),
+            command="pip install playwright && python -m playwright install chromium",
+            output=output,
+            command_path=None,
+            version=_dependency_version("playwright"),
+        )
     return ToolInstallAttempt(tool=tool, attempted=False, status="missing_tool", reason=f"No installer for {tool}")
 
 
-def refresh_tool_registry(session: Session, install_missing: bool = False, console: Console | None = None) -> ToolPreparation:
+def refresh_tool_registry(session: Session, install_missing: bool = False, console: Console | None = None, browser: bool = False) -> ToolPreparation:
     status = check_runtime_tools()
     attempts: list[ToolInstallAttempt] = []
     if install_missing:
@@ -268,11 +288,13 @@ def refresh_tool_registry(session: Session, install_missing: bool = False, conso
         for tool, installed in status.items():
             if installed or tool == "httpx":
                 continue
-            if tool in APT_INSTALL_TOOLS or tool == "katana":
+            if tool == "playwright" and not browser:
+                continue
+            if tool in APT_INSTALL_TOOLS or tool in {"katana", "playwright"}:
                 attempts.append(_install_dependency(tool))
         status = check_runtime_tools()
     upsert_tool_registry(session, status, attempts)
-    selected = ["http_client", "nmap_top_ports", "gobuster_dir", "ffuf_dir", "katana"]
+    selected = ["http_client", "nmap_top_ports", "gobuster_dir", "ffuf_dir", "katana"] + (["browser_authenticated_capture"] if browser else [])
     return ToolPreparation(
         selected_tools=selected,
         executable_tools=[tool for tool in selected if _tool_ready(tool, status)],
@@ -379,8 +401,8 @@ def _ensure_go_bin_path() -> None:
 
 
 def _dependency_installed(tool: str) -> bool:
-    if tool == "httpx":
-        return _python_package_installed("httpx")
+    if tool in {"httpx", "playwright"}:
+        return _python_package_installed(tool)
     if tool == "seclists":
         return Path("/usr/share/seclists").exists()
     if tool == "dirb":
@@ -389,8 +411,8 @@ def _dependency_installed(tool: str) -> bool:
 
 
 def _dependency_path(tool: str) -> str | None:
-    if tool == "httpx":
-        return "python:httpx" if _python_package_installed("httpx") else None
+    if tool in {"httpx", "playwright"}:
+        return f"python:{tool}" if _python_package_installed(tool) else None
     if tool == "seclists":
         return "/usr/share/seclists" if Path("/usr/share/seclists").exists() else None
     if tool == "dirb" and Path("/usr/share/wordlists/dirb").exists():
@@ -399,9 +421,9 @@ def _dependency_path(tool: str) -> str | None:
 
 
 def _dependency_version(tool: str) -> str | None:
-    if tool == "httpx":
+    if tool in {"httpx", "playwright"}:
         try:
-            return importlib.metadata.version("httpx")
+            return importlib.metadata.version(tool)
         except importlib.metadata.PackageNotFoundError:
             return None
     command_path = shutil.which(tool)

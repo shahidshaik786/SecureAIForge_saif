@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from contextlib import contextmanager
@@ -159,19 +160,28 @@ def status_snapshot(session: Session, scan_id: int) -> dict:
     now = datetime.now(timezone.utc)
     active_statuses = {"created", "planning", "ready", "running", "resuming"}
     seconds_since_activity = (now - scan.last_activity_at).total_seconds() if scan.last_activity_at else None
-    stale = bool(seconds_since_activity is not None and scan.status in active_statuses and seconds_since_activity > stale_after)
+    last_event_seconds = (now - last_event.timestamp).total_seconds() if last_event else None
     process = session.scalar(select(ScanProcess).where(ScanProcess.scan_id == scan_id).order_by(desc(ScanProcess.id)).limit(1))
-    worker_status = process.status if process else None
-    if stale and process and worker_status == "started":
+    running_tool = session.scalar(select(ToolRun).where(ToolRun.scan_id == scan_id, ToolRun.status == "running").order_by(desc(ToolRun.id)).limit(1))
+    pid_alive = _pid_alive(process.pid) if process and process.pid else False
+    process_active = bool(process and process.status in {"started", "running", "planning", "stopping"} and pid_alive)
+    activity_recent = any(
+        value is not None and value <= stale_after
+        for value in [seconds_since_activity, last_event_seconds]
+    )
+    active_phase = scan.current_phase in {"ai_planning", "enumeration", "authentication_discovery", "session_validation", "ai_evidence_review"} or bool(scan.current_tool)
+    stale = bool(scan.status in active_statuses and not process_active and not activity_recent and not running_tool and not active_phase)
+    worker_status = _worker_status(scan.status, process.status if process else None, pid_alive, stale, running_tool)
+    if stale and process and process.status in {"started", "running", "planning"}:
         process.status = "stale"
-        worker_status = "stale"
         session.flush()
         session.commit()
-    display_status = "worker_stale" if stale and worker_status in {"started", "stale"} else "running_stale" if stale else scan.status
+    display_status = "worker_stale" if stale else scan.status
     return {
         "scan_id": scan.id,
         "status": display_status,
         "worker_status": worker_status,
+        "pid_alive": pid_alive,
         "seconds_since_activity": int(seconds_since_activity) if seconds_since_activity is not None else None,
         "current_phase": scan.current_phase,
         "current_agent": scan.current_agent,
@@ -187,6 +197,32 @@ def status_snapshot(session: Session, scan_id: int) -> dict:
         "findings": findings_count,
         "next_recommended_action": _next_recommended_action(scan_id, phases),
     }
+
+
+def _pid_alive(pid: int | None) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _worker_status(scan_status: str, process_status: str | None, pid_alive: bool, stale: bool, running_tool: ToolRun | None) -> str:
+    if scan_status == ScanStatus.COMPLETED.value:
+        return "completed"
+    if scan_status in {ScanStatus.FAILED.value, ScanStatus.FAILED_SYSTEM.value, ScanStatus.FAILED_PRECHECK.value, ScanStatus.FAILED_AI.value, ScanStatus.FAILED_AI_TIMEOUT.value}:
+        return "failed"
+    if process_status == "stopping":
+        return "stopping"
+    if stale:
+        return "stale"
+    if pid_alive or running_tool or scan_status in {"planning", "running", "resuming"}:
+        return "active"
+    return "idle"
 
 
 def _next_recommended_action(scan_id: int, phases: list[ScanPhase]) -> str:
