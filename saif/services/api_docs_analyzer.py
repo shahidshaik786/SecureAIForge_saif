@@ -9,7 +9,24 @@ from saif.core.request_map import upsert_request_response
 from saif.services.evidence import write_evidence
 
 
-DOC_PATHS = ["/openapi.json", "/swagger.json", "/v2/api-docs", "/v3/api-docs", "/api-docs", "/swagger", "/swagger-ui", "/redoc"]
+DOC_PATHS = [
+    "/swagger",
+    "/swagger-ui",
+    "/openapi.json",
+    "/swagger.json",
+    "/v2/api-docs",
+    "/v3/api-docs",
+    "/api-docs",
+    "/redoc",
+    "/postman.json",
+    "/postman_collection.json",
+    "/graphql",
+    "/graphql/schema",
+    "/schema.graphql",
+    "/wsdl",
+    "/service.wsdl",
+    "/asyncapi.json",
+]
 
 
 def discover_api_documentation(scan_id: int, target_url: str, *, timeout: int = 10) -> dict:

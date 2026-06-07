@@ -23,6 +23,7 @@ from saif.db.models import Finding, Scan, ScanProcess, ScanStatus
 from saif.services.progress import emit_progress
 from saif.services.scan_config import normalize_scan_config
 from saif.services.credentials import load_credentials
+from saif.services.debug_export import generate_full_ai_debug_export
 from saif.services.targets import upsert_project_target
 from sqlalchemy import select, text
 from sqlalchemy.exc import ProgrammingError
@@ -611,6 +612,17 @@ def add_api_routes(app: FastAPI) -> None:
     @app.get("/api/scans/{scan_id}/discovery-sources")
     def api_discovery_sources(scan_id: int):
         return api_response(services.discovery_sources(scan_id))
+
+    @app.get("/api/scans/{scan_id}/debug-export")
+    def api_debug_export(scan_id: int, format: str = "json"):
+        with session_scope() as session:
+            try:
+                json_path, html_path = generate_full_ai_debug_export(session, scan_id)
+            except ValueError:
+                return api_not_found(f"scan {scan_id} not found")
+        selected = html_path if format == "html" else json_path
+        media_type = "text/html" if format == "html" else "application/json"
+        return FileResponse(selected, media_type=media_type, filename=selected.name)
 
     @app.get("/api/scans/{scan_id}/logs/tail")
     def api_logs_tail(scan_id: int, lines: int = 100):

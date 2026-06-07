@@ -23,7 +23,7 @@ from saif.ai.advisor import ask_ai_for_payload_strategy, ask_ai_for_report_wordi
 from saif.ai.gate import AIContext, ai_review_evidence, log_ai_context, log_ai_review
 from saif.browser_agent.browser_authenticated_capture import capture_authenticated_browser_traffic
 from saif.config import get_settings
-from saif.core.request_map import body_shape_from_body, upsert_request_response
+from saif.core.request_map import body_shape_from_body, load_request_map, upsert_request_response
 from saif.db.models import (
     AgentJob,
     AgentJobStatus,
@@ -64,6 +64,7 @@ from saif.importers.har_importer import import_har
 from saif.importers.manual_request_importer import import_manual_request
 from saif.services.case_management import ensure_scan_phases, mark_phase, sync_scan_phases
 from saif.services.credentials import load_credentials
+from saif.services.debug_export import generate_full_ai_debug_export
 from saif.services.evidence import write_evidence
 from saif.services.endpoint_sanitizer import rejection_sample, sanitize_candidate_endpoint
 from saif.services.api_docs_analyzer import discover_api_documentation
@@ -1029,6 +1030,7 @@ def run_prompt_scan(
                     planned_cases[tool].status = RunStatus.EXECUTION_ERROR.value
         if scan.status in {ScanStatus.PAUSED.value, ScanStatus.STOPPED.value, ScanStatus.AUTH_FAILED.value, "auth_blocked"}:
             _write_selected_tool_plan(session, scan, execution_profile, bool(((existing_scan.scan_config if existing_scan else {}) or {}).get("full")), selected_tool_audit, executable_tools)
+            _safe_debug_export(session, scan)
             session.flush()
             return scan, selected_tools, tool_results, parsed, {}
         discovery_for_review = _discovery_summary(session, scan.id)
@@ -1104,6 +1106,7 @@ def run_prompt_scan(
         if (scan.scan_config or {}).get("scan_quality_status") == "invalid_tool_selection_enforcement":
             scan.status = "execution_error"
         scan.completed_at = datetime.now(timezone.utc)
+        _safe_debug_export(session, scan)
         emit_progress(session, scan, f"scan {scan.status}", phase="reporting", agent="reporting_agent", event_type="scan_completed", console=console, live=True)
     except Exception:
         scan.status = ScanStatus.FAILED.value
@@ -1111,6 +1114,17 @@ def run_prompt_scan(
         raise
 
     return scan, selected_tools, tool_results, parsed, ai_review
+
+
+def _safe_debug_export(session: Session, scan: Scan) -> None:
+    try:
+        json_path, html_path = generate_full_ai_debug_export(session, scan.id)
+        config = dict(scan.scan_config or {})
+        config["full_ai_debug_json"] = str(json_path)
+        config["full_ai_debug_html"] = str(html_path)
+        scan.scan_config = config
+    except Exception as exc:
+        _artifact(session, scan, "debug_export_error", "full_ai_debug_export_failed", {"error": str(exc)})
 
 
 AGENT_BY_TOOL = {
@@ -1599,9 +1613,12 @@ def _auth_failed_stop_reason(scan: Scan, tool: str, result: dict) -> str | None:
     auth_focused = bool(selected_categories & {"authorization_matrix", "bola_idor", "bfla", "mass_assignment", "cross_account_replay"})
     if tool != "session_validation":
         return None
+    auth_gate = ((scan.scan_config or {}).get("auth_gate") or {})
+    if auth_gate.get("status") == "ready_for_authorization":
+        return None
     output = result.get("output") or {}
-    valid_count = int(output.get("valid_sessions_count") or 0)
-    if valid_count > 0:
+    valid_count = int(output.get("valid_sessions_count") or output.get("login_sessions_count") or 0)
+    if valid_count > 0 and auth_gate.get("status") not in {"authenticated_behavior_not_proven", "two_sessions_no_workflow_requests", "no_authorization_testable_requests"}:
         return None
     if execution_profile == "auth-authorization-debug" or auth_focused:
         return "Login/session material was captured, but authenticated behavior was not proven"
@@ -1633,6 +1650,7 @@ def _auth_gate_blocks_tool(scan: Scan, tool: str) -> bool:
         "authenticated_behavior_not_proven",
         "one_user_behavior_proven",
         "no_authorization_testable_requests",
+        "two_sessions_no_workflow_requests",
         "no_resource_candidates",
     }
     return auth_gate.get("status") in blocking_statuses and tool in set(auth_gate.get("blocks") or AUTH_GATE_BLOCKED_TOOLS)
@@ -1662,7 +1680,9 @@ def _write_auth_coverage_blocked(session: Session, scan: Scan, result: dict) -> 
     payload = {
         "status": status,
         "reason": reason,
-        "valid_sessions_count": int(((result.get("output") or {}).get("valid_sessions_count")) or 0),
+        "login_sessions_count": int(auth_gate.get("login_sessions_count") or ((result.get("output") or {}).get("login_sessions_count")) or ((result.get("output") or {}).get("valid_sessions_count")) or 0),
+        "usable_session_material_count": int(auth_gate.get("usable_session_material_count") or 0),
+        "authenticated_behavior_count": int(auth_gate.get("authenticated_behavior_count") or 0),
         "confirmed_protected_endpoints": [],
         "workflow_request_inventory_count": auth_gate.get("request_inventory_count", 0),
         "authorization_candidate_count": auth_gate.get("authorization_candidate_count", 0),
@@ -2491,6 +2511,32 @@ def _http_get(url: str) -> tuple[str, dict]:
         return RunStatus.TARGET_UNREACHABLE.value, {"error": str(exc)}
 
 
+def _record_http_get_output(session: Session, scan: Scan, url: str, output: dict, source: str) -> None:
+    if not output:
+        return
+    try:
+        upsert_request_response(
+            scan.id,
+            {
+                "source": source,
+                "method": "GET",
+                "url": output.get("final_url") or url,
+                "headers": {},
+                "response": {
+                    "status": output.get("status_code"),
+                    "headers": output.get("headers") or {},
+                    "content_type": (output.get("headers") or {}).get("content-type"),
+                    "body_preview": output.get("body_preview") or output.get("_text") or "",
+                    "body_length": len(str(output.get("_text") or output.get("body_preview") or "")),
+                    "redirect_location": (output.get("headers") or {}).get("location"),
+                    "set_cookie": bool((output.get("headers") or {}).get("set-cookie")),
+                },
+            },
+        )
+    except Exception as exc:
+        _artifact(session, scan, "request_map_error", safe_artifact_name("request_map_error", "GET", url), {"source": source, "error": str(exc)})
+
+
 def _start_tool_run_marker(session: Session, scan: Scan, tool: str, agent_name: str, command: str) -> ToolRun:
     now = datetime.now(timezone.utc)
     marker = ToolRun(
@@ -2808,6 +2854,7 @@ def _token(session: Session, scan: Scan, token_type: str, location: str, sample:
 
 def _run_http_baseline(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
     status, output = _http_get(target_url)
+    _record_http_get_output(session, scan, target_url, output, "http_client")
     if status == RunStatus.COMPLETED.value:
         html = output.get("_text", "")
         title = _extract_title(html)
@@ -2884,6 +2931,7 @@ def _run_cache_control_check(session: Session, scan: Scan, target_url: str, prom
 
 def _run_error_disclosure_check(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
     status, output = _http_get(urljoin(target_url.rstrip("/") + "/", "saif-nonexistent-probe"))
+    _record_http_get_output(session, scan, urljoin(target_url.rstrip("/") + "/", "saif-nonexistent-probe"), output, "error_disclosure_check")
     preview = (output.get("_text") or output.get("body_preview") or "")[:4000]
     markers = _interesting_markers(preview)
     result = {"status_code": output.get("status_code"), "markers": markers, "body_preview": preview[:1000]}
@@ -3078,6 +3126,31 @@ def _detect_app_profile(html: str) -> dict:
 
 def _api_wordlist_path() -> str:
     return "configs/wordlists/api_common.txt"
+
+
+def _target_wordlist_path(session: Session, scan: Scan, target_url: str) -> str:
+    words = set(_read_api_words())
+    for endpoint in session.query(DiscoveredEndpoint).filter(DiscoveredEndpoint.scan_id == scan.id).limit(2000).all():
+        for part in re.split(r"[^A-Za-z0-9_-]+", urlparse(endpoint.url).path):
+            if 2 <= len(part) <= 48 and not part.isdigit():
+                words.add(part)
+    for param in session.query(DiscoveredParameter).filter(DiscoveredParameter.scan_id == scan.id).limit(2000).all():
+        if param.name:
+            words.add(str(param.name).strip("/"))
+    for row in load_request_map(scan.id).get("requests") or []:
+        for part in re.split(r"[^A-Za-z0-9_-]+", str(row.get("path") or "")):
+            if 2 <= len(part) <= 48 and not part.isdigit():
+                words.add(part)
+        for key in (row.get("query_params") or {}).keys():
+            words.add(str(key))
+        for key in ((row.get("body_shape") or {}).get("keys") or []):
+            words.add(str(key))
+    output_path = get_settings().evidence_dir / f"scan-{scan.id}" / "target_wordlist.txt"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    selected = sorted({word.strip("/") for word in words if word and 1 < len(word.strip("/")) <= 80})[: get_settings().dir_discovery_max_words]
+    output_path.write_text("\n".join(selected) + "\n", encoding="utf-8")
+    _artifact(session, scan, "target_wordlist", "target_wordlist", {"path": str(output_path), "word_count": len(selected), "source": "html_js_docs_params_errors_request_map"})
+    return str(output_path)
 
 
 def _read_api_words() -> list[str]:
@@ -3789,6 +3862,7 @@ def _run_technology_fingerprint(session: Session, scan: Scan, target_url: str, p
 
 def _run_root_link_inventory(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
     status, html, root_output = _fetch_root_html(target_url)
+    _record_http_get_output(session, scan, target_url, root_output, "root_link_inventory")
     links = _normalize_url_list(target_url, _extract_all_links(html))
     classified = _classify_links(target_url, links)
     output = {
@@ -3814,6 +3888,7 @@ def _run_root_link_inventory(session: Session, scan: Scan, target_url: str, prom
 def _run_robots_txt(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
     url = urljoin(target_url + "/", "/robots.txt")
     status, output = _http_get(url)
+    _record_http_get_output(session, scan, url, output, "robots_txt")
     if output.get("status_code") == 200:
         output["content"] = output.get("_text", "")[:12000]
         for path in re.findall(r"(?im)^(?:allow|disallow|sitemap):\s*(\S+)", output["content"]):
@@ -3828,6 +3903,7 @@ def _run_robots_txt(session: Session, scan: Scan, target_url: str, prompt: str, 
 def _run_sitemap_xml(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
     url = urljoin(target_url + "/", "/sitemap.xml")
     status, output = _http_get(url)
+    _record_http_get_output(session, scan, url, output, "sitemap_xml")
     if output.get("status_code") == 200:
         output["urls"] = _parse_sitemap_urls(output.get("_text", ""))
         for discovered_url in output["urls"]:
@@ -3846,6 +3922,7 @@ def _run_openapi_discovery(session: Session, scan: Scan, target_url: str, prompt
     for path in OPENAPI_PATHS:
         url = urljoin(target_url + "/", path)
         status, output = _http_get(url)
+        _record_http_get_output(session, scan, url, output, "openapi_discovery")
         item = {"url": url, "status": status, "status_code": output.get("status_code"), "error": output.get("error")}
         results.append(item)
         if output.get("status_code") == 200:
@@ -4021,7 +4098,7 @@ def _run_api_method_probe(session: Session, scan: Scan, target_url: str, prompt:
 def _run_ffuf_api_paths(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
     status, html, _ = _fetch_root_html(target_url)
     candidates = _api_candidate_paths(html, target_url)
-    wordlist = _api_wordlist_path()
+    wordlist = _target_wordlist_path(session, scan, target_url)
     bases = candidates["bases"][:8]
     runs = []
     discovered = []
@@ -4052,7 +4129,7 @@ def _run_ffuf_api_paths(session: Session, scan: Scan, target_url: str, prompt: s
 def _run_gobuster_api_paths(session: Session, scan: Scan, target_url: str, prompt: str, parsed: dict) -> dict:
     status, html, _ = _fetch_root_html(target_url)
     candidates = _api_candidate_paths(html, target_url)
-    wordlist = _api_wordlist_path()
+    wordlist = _target_wordlist_path(session, scan, target_url)
     bases = candidates["bases"][:8]
     runs = []
     discovered = []
@@ -4561,6 +4638,27 @@ def _manual_request_rows(scan: Scan, target_url: str) -> list[dict]:
 
 def _build_workflow_request_inventory(session: Session, scan: Scan, target_url: str) -> dict:
     rows: list[dict] = []
+    for row in (load_request_map(scan.id).get("requests") or []):
+        response = row.get("response") or {}
+        rows.append(
+            _inventory_row(
+                str(row.get("method") or "GET"),
+                str(row.get("url") or ""),
+                "post_login" if row.get("auth_attached") else "pre_login",
+                row.get("headers") or {},
+                row.get("body_shape") or {},
+                {
+                    "status": response.get("status"),
+                    "headers": {},
+                    "content_type": response.get("content_type"),
+                    "body_hash": response.get("body_hash"),
+                    "body_markers": response.get("markers") or [],
+                    "redirect_location": response.get("redirect_location"),
+                    "set_cookie": response.get("set_cookie"),
+                },
+                row.get("source") or "request_map",
+            )
+        )
     for artifact in session.query(PipelineArtifact).filter(PipelineArtifact.scan_id == scan.id, PipelineArtifact.name == "browser_authenticated_capture").all():
         capture = artifact.data or {}
         for item in capture.get("network_requests") or capture.get("observed_endpoints") or []:
@@ -4628,7 +4726,9 @@ def _build_authenticated_behavior_proof(session: Session, scan: Scan, target_url
     sessions = _authenticated_sessions_for_scan(session, scan)
     token_count = session.query(DiscoveredToken).filter(DiscoveredToken.scan_id == scan.id).count()
     inventory_material = any(row.get("auth_attached") or "sets_session_cookie" in set(row.get("behavior_tags") or []) for row in inventory.get("requests") or [])
-    session_material = bool(token_count or inventory_material or any(item.cookie or item.authorization_header or item.access_token_masked or item.secret_ref for item in sessions))
+    login_sessions = [item for item in sessions if item.login_status == "login_success"]
+    material_sessions = [item for item in sessions if item.cookie or item.authorization_header or item.access_token_masked or item.secret_ref]
+    session_material = bool(token_count or inventory_material or material_sessions)
     candidates = _authorization_candidate_requests(inventory)
     resources = _infer_resources_from_inventory(session, scan, inventory)
     proof_types = []
@@ -4654,16 +4754,38 @@ def _build_authenticated_behavior_proof(session: Session, scan: Scan, target_url
             proof_types.append("state_change")
     unique_types = list(dict.fromkeys(proof_types))
     proven = bool(session_material and (evidence or candidates))
-    two_user = len({item.credential_label for item in sessions if item.login_status == "login_success"}) >= 2 and proven
-    status = "two_user_behavior_proven" if two_user else "one_user_behavior_proven" if proven else "authenticated_behavior_not_proven" if session_material else "session_material_missing"
+    authenticated_behavior_count = len({item.credential_label for item in material_sessions}) if proven else 0
+    two_login_sessions = len({item.credential_label for item in login_sessions}) >= 2
+    two_user = two_login_sessions and proven
+    if two_user and candidates:
+        gate_status = "ready_for_authorization"
+        gate_reason = None
+    elif two_login_sessions and not inventory.get("request_count"):
+        gate_status = "two_sessions_no_workflow_requests"
+        gate_reason = "Two login sessions exist, but no workflow requests were captured for authorization comparison."
+    elif two_user and not candidates:
+        gate_status = "no_authorization_testable_requests"
+        gate_reason = "Two authenticated sessions exist, but no authorization-testable workflow requests were identified."
+    elif proven:
+        gate_status = "one_user_behavior_proven"
+        gate_reason = "Authenticated behavior was proven, but two-user authorization comparison is not ready."
+    elif session_material:
+        gate_status = "authenticated_behavior_not_proven"
+        gate_reason = "Login/session material exists but no post-login workflow behavior could be confirmed."
+    else:
+        gate_status = "session_material_missing"
+        gate_reason = "No session material was captured."
     proof = {
         "authenticated_behavior_proven": proven,
         "proof_type": unique_types,
         "evidence": evidence,
         "confidence": "high" if any(item.get("confidence") == "high" for item in evidence) else "medium" if proven else "low",
         "auth_gate": {
-            "status": "ready_for_authorization" if proven and candidates and two_user else "one_user_behavior_proven" if proven else status,
-            "reason": None if proven else "Login/session material exists but no post-login workflow behavior could be confirmed." if session_material else "No session material was captured.",
+            "status": gate_status,
+            "reason": gate_reason,
+            "login_sessions_count": len(login_sessions),
+            "usable_session_material_count": len(material_sessions) or (1 if inventory_material or token_count else 0),
+            "authenticated_behavior_count": authenticated_behavior_count,
             "request_inventory_count": inventory.get("request_count") or 0,
             "authorization_candidate_count": len(candidates),
             "resource_candidate_count": len(resources),
@@ -4939,7 +5061,8 @@ def _run_session_validation(session: Session, scan: Scan, target_url: str, promp
     sessions = _authenticated_sessions_for_scan(session, scan)
     proof = _build_authenticated_behavior_proof(session, scan, target_url)
     if not sessions:
-        output = {"reason": (proof.get("auth_gate") or {}).get("reason") or "no login_success sessions available for validation", "valid_sessions_count": 0, "auth_gate_status": (proof.get("auth_gate") or {}).get("status"), "authenticated_behavior_proof": proof}
+        gate = proof.get("auth_gate") or {}
+        output = {"reason": gate.get("reason") or "no login_success sessions available for validation", "valid_sessions_count": 0, "login_sessions_count": gate.get("login_sessions_count", 0), "usable_session_material_count": gate.get("usable_session_material_count", 0), "authenticated_behavior_count": gate.get("authenticated_behavior_count", 0), "authorization_candidate_count": gate.get("authorization_candidate_count", 0), "auth_gate_status": gate.get("status"), "authenticated_behavior_proof": proof}
         return _record_tool(session, scan, "session_validation", "validate authenticated behavior", RunStatus.COMPLETED.value if proof.get("authenticated_behavior_proven") else RunStatus.MISSING_PREREQUISITE.value, output, "auth", "Session validation", "prompt_session_validation")
     results = []
     valid_count = 0
@@ -4970,7 +5093,8 @@ def _run_session_validation(session: Session, scan: Scan, target_url: str, promp
                 "token_was_masked": bool(secret.get("token_was_masked")),
             }
         )
-    output = {"sessions": results, "valid_sessions_count": valid_count, "required_valid_sessions_for_authorization": 2, "auth_gate_status": (proof.get("auth_gate") or {}).get("status"), "authenticated_behavior_proof": proof}
+    gate = proof.get("auth_gate") or {}
+    output = {"sessions": results, "valid_sessions_count": valid_count, "login_sessions_count": gate.get("login_sessions_count", valid_count), "usable_session_material_count": gate.get("usable_session_material_count", valid_count), "authenticated_behavior_count": gate.get("authenticated_behavior_count", 0), "authorization_candidate_count": gate.get("authorization_candidate_count", 0), "required_valid_sessions_for_authorization": 2, "auth_gate_status": gate.get("status"), "authenticated_behavior_proof": proof}
     emit_progress(
         session,
         scan,

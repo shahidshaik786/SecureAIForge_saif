@@ -156,6 +156,23 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
     request_map_payload = _read_scan_json(scan.id, "request_map.json", {"scan_id": scan.id, "total_requests": 0, "requests": []}) if scan else {}
     ai_trace_index_payload = _read_scan_json(scan.id, "ai/ai_trace_index.json", {"scan_id": scan.id, "total_ai_calls": 0, "calls": []}) if scan else {}
     agent_reactions_payload = _read_scan_jsonl(scan.id, "agent_reactions.jsonl") if scan else []
+    debug_json = (scan.scan_config or {}).get("full_ai_debug_json") if scan else None
+    debug_html = (scan.scan_config or {}).get("full_ai_debug_html") if scan else None
+    ai_calls = ai_trace_index_payload.get("calls") or []
+    ai_debug_summary = {
+        "provider": "Ollama",
+        "model": ai_plan_context.get("ai_model") or get_settings().ollama_model,
+        "ollama_profile": get_settings().ollama_profile,
+        "total_ai_calls": len(ai_calls),
+        "completed_ai_calls": len([item for item in ai_calls if item.get("status") == "completed"]),
+        "timed_out_ai_calls": len([item for item in ai_calls if item.get("status") == "timeout"]),
+        "fallback_count": len([item for item in agent_reactions_payload if item.get("action_taken") == "fallback"]),
+        "full_debug_json": debug_json,
+        "full_debug_html": debug_html,
+        "ollama_influenced_execution": any(item.get("used_for_execution") for item in ai_calls),
+        "deterministic_fallback_used": any(item.get("action_taken") == "fallback" for item in agent_reactions_payload),
+        "summary_text": "AI advisor was enabled but timed out, deterministic fallback continued" if any(item.get("status") == "timeout" for item in ai_calls) else "AI advisor completed and suggestions were accepted/rejected by deterministic guardrails",
+    }
     target_classification_context = next((item.data for item in reversed(pipeline_artifacts) if item.name == "target_classification" and item.data), {})
     response_analysis_items = [item.data for item in pipeline_artifacts if item.artifact_type == "response_analysis" and item.data]
     auth_coverage_blocker = next((item.data for item in reversed(pipeline_artifacts) if item.name == "auth_coverage_blocked" and item.data), None)
@@ -265,6 +282,7 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
             else None
         ),
         "ai_decision_memory": ai_decision_memory,
+        "ai_debug_summary": ai_debug_summary,
         "request_map": {
             "total_requests": request_map_payload.get("total_requests") or len(request_map_payload.get("requests") or []),
             "requests": (request_map_payload.get("requests") or [])[:200],
@@ -984,6 +1002,7 @@ def generate_html_report(session: Session, project_name: str | None = None, scan
       <tr><th>AI review consistency warnings</th><td><pre>{escape(json.dumps(payload.get("ai_review_consistency_warnings"), indent=2, sort_keys=True))}</pre></td></tr>
       <tr><th>AI local fallback summary used</th><td>{escape(str(payload.get("ai_local_fallback_summary_used")))}</td></tr>
       <tr><th>AI decision memory</th><td><pre>{escape(json.dumps(payload.get("ai_decision_memory"), indent=2, sort_keys=True))}</pre></td></tr>
+      <tr><th>AI debug summary</th><td><pre>{escape(json.dumps(payload.get("ai_debug_summary"), indent=2, sort_keys=True))}</pre></td></tr>
       <tr><th>Coverage blockers</th><td><pre>{escape(json.dumps(payload.get("coverage_blockers"), indent=2, sort_keys=True))}</pre></td></tr>
       <tr><th>Auth coverage blocker</th><td>{escape(str(payload.get("auth_coverage_blocker_message") or ""))}</td></tr>
       <tr><th>AI call runs</th><td><pre>{escape(json.dumps(payload.get("ai_call_runs"), indent=2, sort_keys=True))}</pre></td></tr>

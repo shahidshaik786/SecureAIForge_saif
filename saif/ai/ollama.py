@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from saif.ai.runtime import budget_remaining, queued_ai_call, runtime_for_stage
 from saif.config import get_settings
 
 
@@ -56,7 +57,7 @@ class OllamaClient:
         settings = get_settings()
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
         self.url = f"{self.base_url}/api/chat"
-        self.model = model or settings.ollama_model
+        self.model = model or runtime_for_stage("initial_planning").model
         self.last_call_attempts: list[dict] = []
         self.last_raw_response: str = ""
 
@@ -74,77 +75,90 @@ class OllamaClient:
 
     def chat(self, messages: list[dict], timeout: int | None = None, format_: str | None = None, stage: str | None = None) -> dict:
         settings = get_settings()
-        total_attempts = max(1, settings.ollama_max_retries + 1)
-        timeout_seconds = timeout or settings.ollama_timeout_seconds
+        runtime = runtime_for_stage(stage or "phase_decision")
+        total_attempts = max(1, runtime.max_attempts)
+        per_attempt_timeout_seconds = int(timeout or runtime.per_attempt_timeout_seconds)
+        total_budget_seconds = runtime.total_budget_seconds
         self.last_call_attempts = []
         self.last_raw_response = ""
         last_error: Exception | None = None
-        base_num_predict = max(64, settings.ollama_num_predict)
+        started = time.perf_counter()
 
-        for attempt in range(1, total_attempts + 1):
-            attempt_started = time.perf_counter()
-            retry_index = attempt - 1
-            attempt_messages = _messages_for_attempt(messages, retry_index)
-            num_predict = max(128, int(base_num_predict / (2**retry_index)))
-            payload: dict[str, Any] = {
-                "model": self.model,
-                "messages": attempt_messages,
-                "stream": False,
-                "keep_alive": settings.ollama_keep_alive,
-                "options": {
-                    "num_ctx": settings.ollama_num_ctx,
+        with queued_ai_call(runtime.queue_ai_calls):
+            for attempt in range(1, total_attempts + 1):
+                remaining = budget_remaining(started, total_budget_seconds)
+                if remaining <= 0:
+                    last_error = OllamaTimeoutError(f"Ollama total budget exceeded after {len(self.last_call_attempts)} attempts", self.last_call_attempts)
+                    break
+                attempt_timeout = max(1, min(float(per_attempt_timeout_seconds), remaining))
+                attempt_started = time.perf_counter()
+                retry_index = attempt - 1
+                attempt_messages = _messages_for_attempt(messages, retry_index)
+                num_predict = max(64, int(runtime.num_predict / (2**retry_index)))
+                payload: dict[str, Any] = {
+                    "model": self.model,
+                    "messages": attempt_messages,
+                    "stream": False,
+                    "keep_alive": settings.ollama_keep_alive,
+                    "options": {
+                        "num_ctx": runtime.num_ctx,
+                        "num_predict": num_predict,
+                        "temperature": runtime.temperature,
+                    },
+                }
+                if format_:
+                    payload["format"] = format_
+                request_summary = {
+                    "stage": stage,
+                    "ollama_profile": runtime.profile,
+                    "model": self.model,
+                    "message_count": len(attempt_messages),
+                    "prompt_chars_estimate": sum(len(str(item.get("content", ""))) for item in attempt_messages),
+                    "per_attempt_timeout_seconds": per_attempt_timeout_seconds,
+                    "attempt_timeout_seconds": attempt_timeout,
+                    "total_budget_seconds": total_budget_seconds,
+                    "max_attempts": total_attempts,
+                    "attempts_used": attempt,
                     "num_predict": num_predict,
-                    "temperature": settings.ollama_temperature,
-                },
-            }
-            if format_:
-                payload["format"] = format_
-            request_summary = {
-                "stage": stage,
-                "model": self.model,
-                "message_count": len(attempt_messages),
-                "prompt_chars_estimate": sum(len(str(item.get("content", ""))) for item in attempt_messages),
-                "timeout_seconds": timeout_seconds,
-                "num_predict": num_predict,
-                "num_ctx": settings.ollama_num_ctx,
-                "temperature": settings.ollama_temperature,
-                "keep_alive": settings.ollama_keep_alive,
-            }
-            try:
-                response = httpx.post(self.url, json=payload, timeout=_httpx_timeout(timeout_seconds))
-                duration_ms = int((time.perf_counter() - attempt_started) * 1000)
-                body_preview = response.text[:1000]
-                if response.status_code >= 500:
-                    self._record_attempt(attempt, response.status_code, "failed_ai_500", duration_ms, body_preview, request_summary, body_preview)
-                    last_error = OllamaServerError(f"HTTP {response.status_code}: {body_preview}", self.last_call_attempts)
-                    if attempt < total_attempts:
-                        _sleep_backoff(settings.ollama_retry_backoff_seconds, retry_index)
-                        continue
-                    raise last_error
-                if response.status_code >= 400:
-                    self._record_attempt(attempt, response.status_code, "failed_ai_http", duration_ms, body_preview, request_summary, body_preview)
-                    raise OllamaHTTPError(response.status_code, body_preview, self.last_call_attempts)
+                    "num_ctx": runtime.num_ctx,
+                    "temperature": runtime.temperature,
+                    "keep_alive": settings.ollama_keep_alive,
+                }
                 try:
-                    parsed = response.json()
-                except json.JSONDecodeError as exc:
-                    self._record_attempt(attempt, response.status_code, "failed_ai_parse", duration_ms, str(exc), request_summary, body_preview)
-                    last_error = OllamaJSONError(f"Ollama returned invalid response JSON: {exc}", self.last_call_attempts)
-                    if attempt < total_attempts:
-                        _sleep_backoff(settings.ollama_retry_backoff_seconds, retry_index)
-                        continue
-                    raise last_error from exc
-                self._record_attempt(attempt, response.status_code, "completed", duration_ms, None, request_summary, _response_summary(parsed))
-                return parsed
-            except httpx.TimeoutException as exc:
-                duration_ms = int((time.perf_counter() - attempt_started) * 1000)
-                self._record_attempt(attempt, None, "failed_ai_timeout", duration_ms, str(exc), request_summary, None)
-                last_error = OllamaTimeoutError(str(exc), self.last_call_attempts)
-            except (httpx.ConnectError, httpx.ReadError) as exc:
-                duration_ms = int((time.perf_counter() - attempt_started) * 1000)
-                self._record_attempt(attempt, None, "failed_ai_connection", duration_ms, str(exc), request_summary, None)
-                last_error = OllamaChatError(str(exc), self.last_call_attempts)
-            if attempt < total_attempts:
-                _sleep_backoff(settings.ollama_retry_backoff_seconds, retry_index)
+                    response = httpx.post(self.url, json=payload, timeout=_httpx_timeout(attempt_timeout))
+                    duration_ms = int((time.perf_counter() - attempt_started) * 1000)
+                    body_preview = response.text[:1000]
+                    if response.status_code >= 500:
+                        self._record_attempt(attempt, response.status_code, "failed_ai_500", duration_ms, body_preview, request_summary, body_preview)
+                        last_error = OllamaServerError(f"HTTP {response.status_code}: {body_preview}", self.last_call_attempts)
+                        if attempt < total_attempts and budget_remaining(started, total_budget_seconds) > settings.ollama_retry_backoff_seconds:
+                            _sleep_backoff(settings.ollama_retry_backoff_seconds, retry_index)
+                            continue
+                        raise last_error
+                    if response.status_code >= 400:
+                        self._record_attempt(attempt, response.status_code, "failed_ai_http", duration_ms, body_preview, request_summary, body_preview)
+                        raise OllamaHTTPError(response.status_code, body_preview, self.last_call_attempts)
+                    try:
+                        parsed = response.json()
+                    except json.JSONDecodeError as exc:
+                        self._record_attempt(attempt, response.status_code, "failed_ai_parse", duration_ms, str(exc), request_summary, body_preview)
+                        last_error = OllamaJSONError(f"Ollama returned invalid response JSON: {exc}", self.last_call_attempts)
+                        if attempt < total_attempts and budget_remaining(started, total_budget_seconds) > settings.ollama_retry_backoff_seconds:
+                            _sleep_backoff(settings.ollama_retry_backoff_seconds, retry_index)
+                            continue
+                        raise last_error from exc
+                    self._record_attempt(attempt, response.status_code, "completed", duration_ms, None, request_summary, _response_summary(parsed))
+                    return parsed
+                except httpx.TimeoutException as exc:
+                    duration_ms = int((time.perf_counter() - attempt_started) * 1000)
+                    self._record_attempt(attempt, None, "failed_ai_timeout", duration_ms, str(exc), request_summary, None)
+                    last_error = OllamaTimeoutError(str(exc), self.last_call_attempts)
+                except (httpx.ConnectError, httpx.ReadError) as exc:
+                    duration_ms = int((time.perf_counter() - attempt_started) * 1000)
+                    self._record_attempt(attempt, None, "failed_ai_connection", duration_ms, str(exc), request_summary, None)
+                    last_error = OllamaChatError(str(exc), self.last_call_attempts)
+                if attempt < total_attempts and budget_remaining(started, total_budget_seconds) > settings.ollama_retry_backoff_seconds:
+                    _sleep_backoff(settings.ollama_retry_backoff_seconds, retry_index)
 
         if isinstance(last_error, OllamaChatError):
             raise last_error

@@ -14,6 +14,7 @@ from saif.services.prompt_runner import (
     _build_authenticated_behavior_proof,
     _dependency_block_for_tool,
     _deterministic_tools_for_execution_profile,
+    _auth_failed_stop_reason,
     _request_template_for_parameter,
     _is_public_validation_endpoint,
     _run_rate_limit_executor,
@@ -324,6 +325,12 @@ class ExecutionProfileTests(unittest.TestCase):
 
         self.assertEqual(block["missing_artifact"], "authenticated_behavior_not_proven")
         self.assertNotEqual(block["missing_artifact"], "protected_endpoint_candidates")
+
+    def test_ready_for_authorization_does_not_become_auth_blocked(self) -> None:
+        scan = SimpleNamespace(scan_config={"execution_profile": "destructive-full-scan", "auth_gate": {"status": "ready_for_authorization", "login_sessions_count": 2, "authorization_candidate_count": 1}})
+        result = {"output": {"valid_sessions_count": 0, "auth_gate_status": "ready_for_authorization"}}
+
+        self.assertIsNone(_auth_failed_stop_reason(scan, "session_validation", result))
 
     def test_missing_existing_scan_defaults_to_auto_application_profile(self) -> None:
         self.assertEqual(application_profile_for_existing_scan(None), "auto")

@@ -33,6 +33,7 @@ from saif.services.reporting import generate_report
 from saif.services.scan_config import normalize_scan_config
 from saif.services.case_management import completed_tools, ensure_scan_phases, production_readiness_for_scan, scan_summary, scan_target, sync_scan_phases, tools_for_phase, mark_phase
 from saif.services.dashboard import dashboard_status as dashboard_status_payload, run_dashboard, stop_dashboard
+from saif.services.debug_export import generate_full_ai_debug_export
 from saif.services.targets import resolve_target, upsert_project_target
 from saif.services.tool_manager import install_missing_supported_tools, print_tool_summary, refresh_tool_registry, tool_registry_snapshot
 import saif.services.prompt_runner as prompt_runner
@@ -319,6 +320,21 @@ def install_tools(browser: bool = typer.Option(False, "--browser")) -> None:
             refresh_tool_registry(session, install_missing=False, console=console)
     except ProgrammingError as exc:
         _handle_db_programming_error(exc)
+
+
+@app.command("debug-export")
+def debug_export(scan_id: int = typer.Option(..., "--scan-id")) -> None:
+    """Generate a single full AI/debug export for a scan."""
+    try:
+        with session_scope() as session:
+            json_path, html_path = generate_full_ai_debug_export(session, scan_id)
+    except ProgrammingError as exc:
+        _handle_db_programming_error(exc)
+    except Exception as exc:
+        console.print(f"ERROR: debug export failed: {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"Debug JSON: {json_path}")
+    console.print(f"Debug HTML: {html_path}")
 
 
 @project_app.command("create")

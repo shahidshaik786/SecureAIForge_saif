@@ -8,7 +8,8 @@ from urllib.parse import urlparse
 from sqlalchemy.orm import Session
 
 from saif.ai.ollama import OllamaClient
-from saif.ai.tracing import begin_ai_trace, complete_ai_trace, mask_secrets, stage_timeout
+from saif.ai.runtime import runtime_for_stage
+from saif.ai.tracing import append_ai_trace_index, begin_ai_trace, complete_ai_trace, mask_secrets, stage_timeout
 from saif.config import get_settings
 from saif.db.models import AiCallRun, AiDecision, Evidence, Log, Scan
 from saif.services.pentest_engine import ai_decision_contract, validate_ai_decision
@@ -247,7 +248,8 @@ def _ask_guarded_ai(
 ) -> dict:
     settings = get_settings()
     client = client or OllamaClient()
-    timeout_seconds = stage_timeout(stage, settings.ollama_timeout_seconds)
+    runtime = runtime_for_stage(stage)
+    timeout_seconds = runtime.per_attempt_timeout_seconds
     contract = ai_decision_contract(
         current_phase,
         evidence,
@@ -255,7 +257,7 @@ def _ask_guarded_ai(
         scope=scope,
         output_schema=output_schema,
         timeout_seconds=timeout_seconds,
-        retry_limit=settings.ollama_max_retries,
+        retry_limit=runtime.max_attempts,
     )
     system_prompt = (
         "Return strict JSON only. You are an evidence-bound pentest advisor. "
@@ -267,13 +269,13 @@ def _ask_guarded_ai(
         stage=stage.split(":", 1)[0] if stage.startswith("phase_decision:") else stage,
         phase=current_phase,
         agent="ai_advisor_agent",
-        model=getattr(client, "model", settings.ollama_model),
+        model=getattr(client, "model", runtime.model),
         base_url=getattr(client, "base_url", settings.ollama_base_url),
         timeout_seconds=timeout_seconds,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-        options={"temperature": settings.ollama_temperature, "num_ctx": settings.ollama_num_ctx, "num_predict": settings.ollama_num_predict},
+        options={"temperature": runtime.temperature, "num_ctx": runtime.num_ctx, "num_predict": runtime.num_predict, "max_attempts": runtime.max_attempts, "total_budget_seconds": runtime.total_budget_seconds},
         evidence_packet={**(evidence or {}), "allowed_actions": allowed_actions, "forbidden_actions": contract.get("forbidden_actions") or [], "scope": scope or {}},
     )
     _emit_ai_event(session, scan, "ai_advisor_called", stage, "AI advisor called", {"current_phase": current_phase, "allowed_actions": allowed_actions})
@@ -315,6 +317,7 @@ def _ask_guarded_ai(
             agent_reaction=agent_reaction,
             used_for_execution=False,
             used_as_advisory=True,
+            attempts_used=len(getattr(client, "last_call_attempts", []) or []),
         )
         validation["ai_trace"] = _trace_context(stage, current_phase, contract, client, decision, trace_payload)
         _record_ai_decision(session, scan, stage, current_phase, contract, decision, validation, status, client, trace_payload=trace_payload)
@@ -341,11 +344,22 @@ def _ask_guarded_ai(
             schema_valid=False,
             schema_errors=["timed out"] if is_timeout else [str(exc)],
             accepted=False,
-            rejected_reasons=["timed out"] if is_timeout else [str(exc)],
+            rejected_reasons=["ollama_timeout"] if is_timeout else [str(exc)],
             normalized_decision={},
-            agent_reaction={"agent_name": "ai_advisor_agent", "rejected_ollama_suggestion": True, "reason": str(exc), "action_taken": "fallback", "action_details": {"fallback": "deterministic workflow continued"}},
+            agent_reaction={
+                "agent_name": "ai_advisor_agent",
+                "rejected_ollama_suggestion": True,
+                "reason": "ollama_timeout" if is_timeout else str(exc),
+                "action_taken": "fallback",
+                "action_details": {"fallback": "deterministic workflow continued"},
+                "scope_check": "not_evaluated_timeout" if is_timeout else "failed",
+                "policy_check": "not_evaluated_timeout" if is_timeout else "failed",
+                "selected_category_check": "not_evaluated_timeout" if is_timeout else "failed",
+                "prerequisite_check": "not_evaluated_timeout" if is_timeout else "failed",
+            },
             used_for_execution=False,
             used_as_advisory=True,
+            attempts_used=len(attempts),
         )
         fallback["ai_trace"] = _trace_context(stage, current_phase, contract, client, None, trace_payload)
         _record_ai_decision(session, scan, stage, current_phase, contract, None, fallback, status, client, str(exc), trace_payload=trace_payload)
@@ -418,6 +432,7 @@ def _record_ai_decision(
     accepted = bool(validation.get("approved"))
     rejected_reasons = [] if accepted else [str(validation.get("reason") or error or "rejected")]
     ai_call_id = str((trace_payload or {}).get("ai_call_id") or f"scan-{scan.id}-{stage}-{now.strftime('%Y%m%dT%H%M%S%fZ')}")
+    runtime = runtime_for_stage(stage)
     payload = trace_payload or {
         "ai_call_id": ai_call_id,
         "scan_id": scan.id,
@@ -427,19 +442,27 @@ def _record_ai_decision(
         "tool": "ollama",
         "model": client.model,
         "base_url": client.base_url,
+        "ollama_profile": runtime.profile,
         "started_at": now.isoformat(),
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "duration_ms": sum(int(item.get("duration_ms") or 0) for item in attempts) if attempts else 0,
         "timeout_seconds": contract.get("timeout_seconds"),
+        "per_attempt_timeout_seconds": runtime.per_attempt_timeout_seconds,
+        "total_budget_seconds": runtime.total_budget_seconds,
+        "max_attempts": runtime.max_attempts,
+        "attempts_used": len(attempts or []),
         "request_to_ollama": {
             "system_prompt": "Return strict JSON only. You are an evidence-bound pentest advisor.",
             "user_prompt": prompt_text,
             "messages": [],
             "options": {
-                "temperature": get_settings().ollama_temperature,
-                "num_ctx": get_settings().ollama_num_ctx,
-                "num_predict": get_settings().ollama_num_predict,
+                "temperature": runtime.temperature,
+                "num_ctx": runtime.num_ctx,
+                "num_predict": runtime.num_predict,
             },
+            "full_prompt_text": prompt_text,
+            "prompt_size_chars": len(prompt_text),
+            "prompt_sha256": prompt_hash,
         },
         "evidence_sent_to_ollama": {
             "current_phase": phase,
@@ -458,6 +481,26 @@ def _record_ai_decision(
     path = (trace_payload or {}).get("trace_path") or (trace_payload or {}).get("path")
     if not path:
         path = _write_ai_trace(scan.id, stage, ai_call_id, payload)
+        _update_ai_trace_index(
+            scan.id,
+            {
+                "ai_call_id": ai_call_id,
+                "stage": stage,
+                "phase": phase,
+                "agent": "ai_advisor_agent",
+                "status": "completed" if status == "accepted" else status,
+                "accepted": accepted,
+                "used_for_execution": False,
+                "used_as_advisory": True,
+                "duration_ms": payload.get("duration_ms"),
+                "attempts_used": len(attempts or []),
+                "per_attempt_timeout_seconds": payload.get("per_attempt_timeout_seconds") or contract.get("timeout_seconds"),
+                "total_budget_seconds": payload.get("total_budget_seconds"),
+                "prompt_hash": prompt_hash,
+                "response_hash": response_hash,
+                "trace_path": str(path),
+            },
+        )
     session.add(Evidence(scan_id=scan.id, kind="ai_decision", path=str(path), summary=f"AI advisor {stage}: {status}", metadata_json={"phase": phase, "stage": stage, "status": status}))
     session.add(
         AiDecision(
@@ -481,6 +524,7 @@ def _record_ai_decision(
         )
     )
     final_attempt = attempts[-1] if attempts else {}
+    attempts_used = int((trace_payload or {}).get("attempts_used") or len(attempts or []))
     session.add(
         AiCallRun(
             scan_id=scan.id,
@@ -490,10 +534,21 @@ def _record_ai_decision(
             http_status=final_attempt.get("http_status"),
             started_at=datetime.now(timezone.utc),
             completed_at=datetime.now(timezone.utc),
-            duration_ms=sum(int(item.get("duration_ms") or 0) for item in attempts) if attempts else None,
-            retry_count=max(0, len(attempts) - 1),
+            duration_ms=(trace_payload or {}).get("duration_ms") or (sum(int(item.get("duration_ms") or 0) for item in attempts) if attempts else None),
+            retry_count=max(0, attempts_used - 1),
             error_message=error,
-            request_summary={"ai_call_id": ai_call_id, "current_phase": phase, "allowed_actions": contract.get("allowed_actions"), "timeout_seconds": contract.get("timeout_seconds"), "retry_limit": contract.get("retry_limit"), "prompt_hash": prompt_hash},
+            request_summary={
+                "ai_call_id": ai_call_id,
+                "current_phase": phase,
+                "allowed_actions": contract.get("allowed_actions"),
+                "ollama_profile": (trace_payload or {}).get("ollama_profile") or get_settings().ollama_profile,
+                "per_attempt_timeout_seconds": (trace_payload or {}).get("per_attempt_timeout_seconds") or contract.get("timeout_seconds"),
+                "total_budget_seconds": (trace_payload or {}).get("total_budget_seconds"),
+                "max_attempts": (trace_payload or {}).get("max_attempts") or contract.get("retry_limit"),
+                "attempts_used": attempts_used,
+                "final_status": status,
+                "prompt_hash": prompt_hash,
+            },
             parsed_response_json=decision,
             response_summary=validation.get("reason"),
             evidence_path=str(path),
@@ -515,15 +570,7 @@ def _write_ai_trace(scan_id: int, stage: str, ai_call_id: str, payload: dict):
 
 
 def _update_ai_trace_index(scan_id: int, entry: dict) -> None:
-    directory = get_settings().evidence_dir / f"scan-{scan_id}" / "ai"
-    directory.mkdir(parents=True, exist_ok=True)
-    index_path = directory / "ai_trace_index.json"
-    try:
-        items = json.loads(index_path.read_text(encoding="utf-8")) if index_path.exists() else []
-    except Exception:
-        items = []
-    items.append(entry)
-    index_path.write_text(json.dumps(items, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    append_ai_trace_index(scan_id, entry)
 
 
 def _sanitize_ai_trace(value):

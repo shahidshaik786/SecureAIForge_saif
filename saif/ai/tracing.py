@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from saif.ai.runtime import runtime_for_stage
 from saif.config import get_settings
 
 
@@ -19,19 +20,7 @@ def utc_now() -> str:
 
 
 def stage_timeout(stage: str, default_timeout: int | None = None) -> int:
-    default = int(default_timeout or get_settings().ollama_timeout_seconds)
-    stage_key = str(stage or "").split(":", 1)[0]
-    return {
-        "initial_planning": 120,
-        "response_advisor": 60,
-        "response_review": 60,
-        "response_analysis": 60,
-        "payload_strategy": 60,
-        "evidence_review": 90,
-        "finding_review": 60,
-        "report_wording": 90,
-        "phase_decision": 60,
-    }.get(stage_key, min(default, 120))
+    return runtime_for_stage(stage).per_attempt_timeout_seconds
 
 
 def begin_ai_trace(
@@ -50,6 +39,7 @@ def begin_ai_trace(
     evidence_packet: dict | None = None,
 ) -> dict:
     settings = get_settings()
+    runtime = runtime_for_stage(stage)
     ai_call_id = f"{uuid.uuid4().hex[:12]}-{_safe_name(stage)}"
     started_at = utc_now()
     request = {
@@ -72,11 +62,16 @@ def begin_ai_trace(
         "tool": "ollama",
         "model": model,
         "base_url": base_url,
+        "ollama_profile": runtime.profile,
         "status": "started",
         "started_at": started_at,
         "completed_at": None,
         "duration_ms": 0,
         "timeout_seconds": timeout_seconds,
+        "per_attempt_timeout_seconds": runtime.per_attempt_timeout_seconds,
+        "total_budget_seconds": runtime.total_budget_seconds,
+        "max_attempts": runtime.max_attempts,
+        "attempts_used": 0,
         "request_to_ollama": request,
         "evidence_sent_to_ollama": safe_evidence,
         "raw_ollama_response": "",
@@ -86,6 +81,7 @@ def begin_ai_trace(
         "agent_reaction": _default_agent_reaction(agent),
         "hashes": {"prompt_sha256": prompt_hash, "response_sha256": "", "evidence_packet_sha256": evidence_hash},
     }
+    payload["request_to_ollama"]["prompt_sha256"] = prompt_hash
     path = None
     if scan_id is not None and settings.ai_debug and settings.ai_trace_every_call:
         directory = _ai_dir(scan_id)
@@ -107,6 +103,7 @@ def complete_ai_trace(
     rejected_reasons: list[str] | None = None,
     normalized_decision: dict | None = None,
     agent_reaction: dict | None = None,
+    attempts_used: int | None = None,
     used_for_execution: bool = False,
     used_as_advisory: bool = True,
 ) -> dict:
@@ -121,6 +118,7 @@ def complete_ai_trace(
             "status": status,
             "completed_at": utc_now(),
             "duration_ms": duration_ms,
+            "attempts_used": int(attempts_used if attempts_used is not None else payload.get("attempts_used") or 0),
             "raw_ollama_response": mask_secrets(response_text),
             "parsed_ollama_response": mask_secrets(parsed_response or {}),
             "schema_validation": {"valid": schema_valid, "errors": schema_errors or []},
@@ -154,6 +152,9 @@ def complete_ai_trace(
                 "used_for_execution": used_for_execution,
                 "used_as_advisory": used_as_advisory,
                 "duration_ms": duration_ms,
+                "attempts_used": payload.get("attempts_used"),
+                "per_attempt_timeout_seconds": payload.get("per_attempt_timeout_seconds"),
+                "total_budget_seconds": payload.get("total_budget_seconds"),
                 "prompt_hash": (payload.get("hashes") or {}).get("prompt_sha256"),
                 "response_hash": (payload.get("hashes") or {}).get("response_sha256"),
                 "trace_path": str(path) if path else None,
@@ -177,7 +178,7 @@ def append_ai_trace_index(scan_id: int, entry: dict) -> None:
     else:
         calls = list(existing.get("calls") or [])
     calls.append(mask_secrets(entry))
-    payload = {"scan_id": scan_id, "ai_debug_enabled": get_settings().ai_debug, "total_ai_calls": len(calls), "calls": calls}
+    payload = {"scan_id": scan_id, "ai_debug_enabled": get_settings().ai_debug, "ollama_profile": get_settings().ollama_profile, "total_ai_calls": len(calls), "calls": calls}
     _write_json(index_path, payload)
 
 
@@ -199,8 +200,10 @@ def append_agent_reaction(scan_id: int, trace_payload: dict, *, accepted: bool, 
         "action_details": reaction.get("action_details") or {},
         "selected_categories_checked": (trace_payload.get("evidence_sent_to_ollama") or {}).get("selected_categories") or [],
         "prerequisites_checked": reaction.get("prerequisites_checked") or [],
-        "scope_check": reaction.get("scope_check") or ("passed" if accepted else "failed"),
-        "policy_check": reaction.get("policy_check") or ("passed" if accepted else "failed"),
+        "scope_check": reaction.get("scope_check") or ("not_evaluated_timeout" if "ollama_timeout" in rejected_reasons else "passed" if accepted else "failed"),
+        "policy_check": reaction.get("policy_check") or ("not_evaluated_timeout" if "ollama_timeout" in rejected_reasons else "passed" if accepted else "failed"),
+        "selected_category_check": reaction.get("selected_category_check") or ("not_evaluated_timeout" if "ollama_timeout" in rejected_reasons else "passed" if accepted else "failed"),
+        "prerequisite_check": reaction.get("prerequisite_check") or ("not_evaluated_timeout" if "ollama_timeout" in rejected_reasons else "passed" if accepted else "failed"),
         "evidence_refs": (trace_payload.get("evidence_sent_to_ollama") or {}).get("raw_evidence_refs") or [],
     }
     with path.open("a", encoding="utf-8") as handle:
