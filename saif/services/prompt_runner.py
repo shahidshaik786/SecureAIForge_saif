@@ -6,6 +6,7 @@ import time
 import base64
 import hashlib
 import json
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -73,6 +74,7 @@ from saif.services.pentest_engine import PENTEST_PHASES, analyze_response, class
 from saif.services.progress import emit_progress, heartbeat
 from saif.services.profiles import auth_endpoint_candidates, detect_profile, load_profile, login_payloads, profile_from_scan_artifacts, registration_payloads
 from saif.services.tool_manager import TOOL_DEPENDENCIES, ToolInstallAttempt, check_runtime_tools, prepare_selected_tools, upsert_tool_registry
+from saif.utils.json_safety import summarize_for_db_log
 
 
 TARGET_RE = re.compile(r"(?:https?://[^\s,;'\"<>]+)|(?:\b(?:\d{1,3}\.){3}\d{1,3}\b)", re.IGNORECASE)
@@ -560,13 +562,32 @@ def _selected_tool_plan_payload(scan: Scan | None, execution_profile: str, full:
 
 def _write_selected_tool_plan(session: Session, scan: Scan, execution_profile: str, full: bool, audit: dict, final_executable_tools: list[str] | None = None) -> None:
     payload = _selected_tool_plan_payload(scan, execution_profile, full, audit, final_executable_tools)
+    actual_tools = _actual_tool_runs_for_plan(session, scan)
+    if actual_tools:
+        payload["actually_executed_tools"] = actual_tools
+    allowed = set(payload.get("final_executable_tools") or payload.get("allowed_tools") or [])
+    payload["attempted_but_should_not_have_executed"] = [tool for tool in actual_tools if tool not in allowed]
     config = dict(scan.scan_config or {})
+    if payload["attempted_but_should_not_have_executed"]:
+        config["scan_quality_status"] = "invalid_tool_selection_enforcement"
     config["selected_tool_plan"] = payload
     config["selected_tools"] = list(payload["final_executable_tools"] or [])
     scan.scan_config = config
     path = write_evidence(scan.id, "selected_tool_plan", payload)
     session.add(Evidence(scan_id=scan.id, kind="selected_tool_plan", path=str(path), summary="Selected test category tool plan.", metadata_json={"tool": "orchestrator", "selected_categories": payload["selected_test_categories"]}))
     _artifact(session, scan, "selected_tool_plan", "selected_tool_plan", payload)
+
+
+def _actual_tool_runs_for_plan(session: Session, scan: Scan) -> list[str]:
+    if not getattr(scan, "id", None):
+        return []
+    rows = session.query(ToolRun).filter(ToolRun.scan_id == scan.id).order_by(ToolRun.id).all()
+    tools: list[str] = []
+    for row in rows:
+        name = str(row.tool_name or "").strip()
+        if name and name not in tools:
+            tools.append(name)
+    return tools
 
 
 def _selected_tool_plan(scan: Scan) -> dict:
@@ -808,7 +829,7 @@ def run_prompt_scan(
             scan_id=scan.id,
             level="info",
             message="Prompt received",
-            context={
+            context=summarize_for_db_log({
                 "prompt": prompt,
                 "parsed_intent": parsed,
                 "selected_target": target_url,
@@ -830,7 +851,7 @@ def run_prompt_scan(
                 "allow_payload_testing": allow_payload_testing,
                 "allow_rate_limit_testing": allow_rate_limit_testing,
                 "selected_test_categories": selected_test_categories or [],
-            },
+            }),
         )
     )
     _create_agent_job(session, scan, "orchestrator_agent", "scan_start", AgentJobStatus.COMPLETED.value, {"target": target_url, "tools": selected_tools})
@@ -853,13 +874,13 @@ def run_prompt_scan(
             scan_id=scan.id,
             level="info",
             message="Tool preparation",
-            context={
+            context=summarize_for_db_log({
                 "selected_tools": final_selected_tools,
                 "executable_tools": preparation.executable_tools,
                 "installed_tools": preparation.installed_tools,
                 "missing_tools": preparation.missing_tools,
                 "auto_install_attempts": [attempt.__dict__ for attempt in preparation.attempts],
-            },
+            }),
         )
     )
     _print_tool_preparation(preparation, console)
@@ -998,12 +1019,12 @@ def run_prompt_scan(
                             scan_id=scan.id,
                             level="info",
                             message="Execution profile escalated",
-                            context={
+                            context=summarize_for_db_log({
                                 "execution_profile": scan.profile,
                                 "added_tools": added_tools,
                                 "reason": "Application profile and auth endpoints support authenticated API security workflow.",
                                 "selected_tools": selected_tools,
-                            },
+                            }),
                         )
                     )
                     if console:
@@ -1096,7 +1117,7 @@ def run_prompt_scan(
                 scan_id=scan.id,
                 level="info",
                 message="Execution summary",
-                context=execution_context,
+                context=summarize_for_db_log(execution_context),
             )
         )
         _print_execution_summary(selected_tools, tool_results, console)
@@ -1108,9 +1129,22 @@ def run_prompt_scan(
         scan.completed_at = datetime.now(timezone.utc)
         _safe_debug_export(session, scan)
         emit_progress(session, scan, f"scan {scan.status}", phase="reporting", agent="reporting_agent", event_type="scan_completed", console=console, live=True)
-    except Exception:
+    except Exception as exc:
         scan.status = ScanStatus.FAILED.value
+        scan.current_phase = "failed"
+        scan.progress_message = str(exc) or exc.__class__.__name__
         scan.completed_at = datetime.now(timezone.utc)
+        config = dict(scan.scan_config or {})
+        config["crash"] = {
+            "error_type": exc.__class__.__name__,
+            "message": str(exc) or exc.__class__.__name__,
+            "traceback": traceback.format_exc(),
+        }
+        scan.scan_config = config
+        try:
+            _safe_debug_export(session, scan)
+        except Exception:
+            pass
         raise
 
     return scan, selected_tools, tool_results, parsed, ai_review
@@ -3409,11 +3443,17 @@ def _record_request_map_analysis(session: Session, scan: Scan, method: str, url:
 def _maybe_review_response_with_ai(session: Session, scan: Scan, record: dict, source: str) -> None:
     if not is_important_for_ai(record):
         return
+    path = urlparse(str(record.get("url") or "")).path or ""
+    if _is_auth_workflow_endpoint(path):
+        return
     config = dict(scan.scan_config or {})
     if config.get("response_advisor_disabled"):
         return
+    tags = set(record.get("tags") or record.get("behavior_tags") or [])
+    if get_settings().ollama_profile == "low_gpu" and not (tags & {"object_id", "contains_id", "role_sensitive", "state_changing", "user_specific", "auth_required", "data_returning"}):
+        return
     count = int(config.get("response_advisor_calls") or 0)
-    max_calls = int(config.get("max_response_advisor_calls") or 10)
+    max_calls = int(config.get("max_response_advisor_calls") or get_settings().ai_advisor_max_calls_per_scan or 5)
     if count >= max_calls:
         return
     config["response_advisor_calls"] = count + 1
@@ -4701,10 +4741,22 @@ def _authorization_candidate_requests(inventory: dict) -> list[dict]:
     for row in inventory.get("requests") or []:
         tags = set(row.get("behavior_tags") or [])
         method = str(row.get("method") or "GET").upper()
-        if tags & {"contains_id", "user_specific", "state_changing"} or method not in {"GET", "HEAD", "OPTIONS"}:
-            candidate = dict(row)
-            candidate["candidate_tags"] = sorted(tags | ({"authorization_testable"} if tags else {"authorization_testable"}))
-            candidates.append(candidate)
+        path = urlparse(str(row.get("url") or "")).path or str(row.get("url") or "")
+        response_status = (row.get("response") or {}).get("status")
+        if response_status in {404, 405}:
+            continue
+        if _is_public_validation_endpoint(path) or _is_auth_workflow_endpoint(path):
+            continue
+        if not row.get("auth_attached") and not (tags & {"user_specific", "contains_id", "state_changing", "role_sensitive", "data_returning", "resource_ownership"}):
+            continue
+        if not (tags & {"contains_id", "user_specific", "state_changing", "role_sensitive", "data_returning", "resource_ownership"} or method not in {"GET", "HEAD", "OPTIONS"}):
+            continue
+        candidate = dict(row)
+        quality = "high" if row.get("auth_attached") and tags & {"contains_id", "user_specific", "state_changing", "role_sensitive", "resource_ownership"} else "medium"
+        candidate["candidate_quality"] = quality
+        candidate["replay_template_available"] = bool(candidate.get("method") and candidate.get("url"))
+        candidate["candidate_tags"] = sorted(tags | {"authorization_testable"})
+        candidates.append(candidate)
     return candidates
 
 
@@ -4730,6 +4782,10 @@ def _build_authenticated_behavior_proof(session: Session, scan: Scan, target_url
     material_sessions = [item for item in sessions if item.cookie or item.authorization_header or item.access_token_masked or item.secret_ref]
     session_material = bool(token_count or inventory_material or material_sessions)
     candidates = _authorization_candidate_requests(inventory)
+    ready_candidates = [
+        item for item in candidates
+        if item.get("candidate_quality") in {"high", "medium"} and item.get("replay_template_available")
+    ]
     resources = _infer_resources_from_inventory(session, scan, inventory)
     proof_types = []
     evidence = []
@@ -4757,13 +4813,13 @@ def _build_authenticated_behavior_proof(session: Session, scan: Scan, target_url
     authenticated_behavior_count = len({item.credential_label for item in material_sessions}) if proven else 0
     two_login_sessions = len({item.credential_label for item in login_sessions}) >= 2
     two_user = two_login_sessions and proven
-    if two_user and candidates:
+    if two_user and ready_candidates:
         gate_status = "ready_for_authorization"
         gate_reason = None
     elif two_login_sessions and not inventory.get("request_count"):
         gate_status = "two_sessions_no_workflow_requests"
         gate_reason = "Two login sessions exist, but no workflow requests were captured for authorization comparison."
-    elif two_user and not candidates:
+    elif two_user and not ready_candidates:
         gate_status = "no_authorization_testable_requests"
         gate_reason = "Two authenticated sessions exist, but no authorization-testable workflow requests were identified."
     elif proven:
@@ -4788,6 +4844,7 @@ def _build_authenticated_behavior_proof(session: Session, scan: Scan, target_url
             "authenticated_behavior_count": authenticated_behavior_count,
             "request_inventory_count": inventory.get("request_count") or 0,
             "authorization_candidate_count": len(candidates),
+            "ready_authorization_candidate_count": len(ready_candidates),
             "resource_candidate_count": len(resources),
         },
         "authorization_testable_requests": candidates,
@@ -5025,6 +5082,15 @@ def _looks_authenticated_response(body: str, parsed_json) -> bool:
 def _is_auth_workflow_endpoint(path: str) -> bool:
     lowered = str(path or "").lower()
     auth_workflow_markers = [
+        "/login",
+        "/signin",
+        "/signup",
+        "/register",
+        "/reset",
+        "/verify",
+        "/otp",
+        "/token",
+        "/forgot",
         "/auth/login",
         "/auth/signup",
         "/auth/register",

@@ -109,6 +109,7 @@ class DashboardTemplateTests(unittest.TestCase):
     def test_overview_running_count_excludes_ready_completed_and_stale_scans(self) -> None:
         original_status_snapshot = dashboard_services.status_snapshot
         original_readiness = dashboard_services.production_readiness_for_scan
+        dashboard_services.overview = self.original_overview
 
         scans = [
             SimpleNamespace(id=1, status="completed"),
@@ -128,9 +129,12 @@ class DashboardTemplateTests(unittest.TestCase):
                 return self.rows[0] if self.rows else None
 
         class FakeSession:
+            def __init__(self):
+                self.calls = 0
+
             def scalars(self, statement):
-                text = str(statement)
-                return Result(scans if "scans" in text else [])
+                self.calls += 1
+                return Result(scans if self.calls == 1 else [])
 
             def scalar(self, statement):
                 return 0
@@ -148,6 +152,7 @@ class DashboardTemplateTests(unittest.TestCase):
         finally:
             dashboard_services.status_snapshot = original_status_snapshot
             dashboard_services.production_readiness_for_scan = original_readiness
+            dashboard_services.overview = self.original_overview
 
     def test_dashboard_template_loader_uses_directory_string(self) -> None:
         dashboard_app.validate_dashboard_assets()

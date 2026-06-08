@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session
 
 from saif.ai.gate import AIPlanNotApprovedError
 from saif.cli import _advisory_ai_context, _expanded_workflow_phases, _has_deterministic_workflow
-from saif.db.models import Base, Project, RunStatus, Scan, TestCase
+from saif.db.models import Base, Project, RunStatus, Scan, TestCase, ToolRun
 from saif.services.prompt_runner import (
     _apply_selected_category_allowlist,
+    _authorization_candidate_requests,
     _build_authenticated_behavior_proof,
     _dependency_block_for_tool,
     _deterministic_tools_for_execution_profile,
@@ -271,6 +272,27 @@ class ExecutionProfileTests(unittest.TestCase):
 
             self.assertEqual(session.query(TestCase).filter(TestCase.case_id == "same.case").count(), 2)
 
+    def test_selected_tool_plan_uses_actual_tool_runs(self) -> None:
+        from saif.services.prompt_runner import _write_selected_tool_plan
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            project = Project(name="actual-tools")
+            session.add(project)
+            session.flush()
+            scan = Scan(project_id=project.id, profile="auto", scan_config={})
+            session.add(scan)
+            session.flush()
+            session.add(ToolRun(scan_id=scan.id, tool_name="unexpected_tool", status="completed"))
+            session.flush()
+
+            _write_selected_tool_plan(session, scan, "safe-enumeration", False, {"allowed_tools": ["http_client"], "selected_test_categories": []}, ["http_client"])
+
+            plan = scan.scan_config["selected_tool_plan"]
+            self.assertEqual(plan["actually_executed_tools"], ["unexpected_tool"])
+            self.assertEqual(plan["attempted_but_should_not_have_executed"], ["unexpected_tool"])
+
     def test_authenticated_behavior_proof_from_manual_request(self) -> None:
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
@@ -295,6 +317,70 @@ class ExecutionProfileTests(unittest.TestCase):
             self.assertTrue(proof["authenticated_behavior_proven"])
             self.assertIn("session_material", proof["proof_type"])
             self.assertGreaterEqual(len(proof["authorization_testable_requests"]), 1)
+
+    def test_auth_workflow_endpoints_are_not_authorization_candidates(self) -> None:
+        inventory = {
+            "requests": [
+                {
+                    "method": "POST",
+                    "url": "http://example.test/auth/signup",
+                    "auth_attached": True,
+                    "behavior_tags": ["state_changing", "auth_attached"],
+                    "response": {"status": 200},
+                },
+                {
+                    "method": "GET",
+                    "url": "http://example.test/api/orders/123",
+                    "auth_attached": True,
+                    "behavior_tags": ["contains_id", "user_specific", "auth_attached"],
+                    "response": {"status": 200},
+                },
+            ]
+        }
+
+        candidates = _authorization_candidate_requests(inventory)
+
+        self.assertEqual([item["url"] for item in candidates], ["http://example.test/api/orders/123"])
+
+    def test_404_only_endpoints_are_not_authorization_candidates(self) -> None:
+        inventory = {
+            "requests": [
+                {
+                    "method": "GET",
+                    "url": "http://example.test/api/profile/123",
+                    "auth_attached": True,
+                    "behavior_tags": ["contains_id", "user_specific", "auth_attached"],
+                    "response": {"status": 404},
+                }
+            ]
+        }
+
+        self.assertEqual(_authorization_candidate_requests(inventory), [])
+
+    def test_auth_gate_not_ready_with_only_signup_login_requests(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        with Session(engine) as session:
+            project = Project(name="auth-gate-signup-only")
+            session.add(project)
+            session.flush()
+            scan = Scan(
+                project_id=project.id,
+                profile="auto",
+                scan_config={
+                    "known_authenticated_requests": [
+                        "POST /auth/login HTTP/1.1\nAuthorization: Bearer token\n\n",
+                        "POST /auth/signup HTTP/1.1\nAuthorization: Bearer token\n\n",
+                    ]
+                },
+            )
+            session.add(scan)
+            session.flush()
+
+            proof = _build_authenticated_behavior_proof(session, scan, "http://example.test")
+
+            self.assertNotEqual(proof["auth_gate"]["status"], "ready_for_authorization")
+            self.assertEqual(proof["auth_gate"]["authorization_candidate_count"], 0)
 
     def test_authorization_block_uses_behavior_gate_not_protected_endpoint_candidates(self) -> None:
         class Query:

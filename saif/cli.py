@@ -20,6 +20,7 @@ from saif.ai.gate import (
     build_ai_scan_plan,
     record_failed_precheck,
 )
+from saif.agents.install_agent import basic_install_plan, run_install_plan
 from saif.config import get_settings
 from saif.db.models import AgentJob, AiCallRun, AuthenticatedSession, Credential, Evidence, Finding, PayloadAttempt, Project, Report, RunStatus, Scan, ScanEvent, ScanPhase, ScanProcess, ScanStatus, Target, TestCase, ToolRun
 from saif.db import session_scope
@@ -302,9 +303,11 @@ def tools_refresh(install_missing: bool = typer.Option(False, "--install-missing
 
 
 @app.command("install-tools")
-def install_tools(browser: bool = typer.Option(False, "--browser")) -> None:
+def install_tools(browser: bool = typer.Option(False, "--browser"), recommended: bool = typer.Option(False, "--recommended")) -> None:
     """Install missing supported external tools for WSL/Linux."""
     print_tool_summary(console)
+    if recommended:
+        console.print("Recommended dynamic installs are executed during authorized scans, or explicitly with ./saif.sh install-tool <tool>.")
     preparation = install_missing_supported_tools(console, browser=browser)
     if preparation.attempts:
         table = Table(title="SAIF Tool Installation")
@@ -320,6 +323,20 @@ def install_tools(browser: bool = typer.Option(False, "--browser")) -> None:
             refresh_tool_registry(session, install_missing=False, console=console)
     except ProgrammingError as exc:
         _handle_db_programming_error(exc)
+
+
+@app.command("install-tool")
+def install_tool(tool: str = typer.Argument(...)) -> None:
+    """Run an explicit dynamic install plan for one tool."""
+    result = run_install_plan(
+        scan_id=0,
+        tool=tool,
+        capability="explicit_tool_install",
+        required_for="manual_cli_request",
+        reason="User explicitly requested tool installation.",
+        install_plan=basic_install_plan(tool),
+    )
+    console.print_json(data=result)
 
 
 @app.command("debug-export")

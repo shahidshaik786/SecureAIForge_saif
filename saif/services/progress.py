@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from saif.config import get_settings
 from saif.db import session_scope
 from saif.db.models import AgentJob, AiCallRun, Evidence, Log, Scan, ScanEvent, ScanPhase, ScanProcess, ToolRun, ScanStatus
+from saif.utils.json_safety import summarize_for_db_log
 
 
 def emit_progress(
@@ -32,6 +33,7 @@ def emit_progress(
     live: bool = False,
 ) -> None:
     now = datetime.now(timezone.utc)
+    safe_context = summarize_for_db_log(context or {})
     if event_type in {"scan_started", "phase_started", "agent_started", "tool_started", "ai_call_started", "heartbeat"}:
         if getattr(scan, "status", None) not in {
             ScanStatus.PAUSED.value,
@@ -61,11 +63,11 @@ def emit_progress(
             tool_name=tool or scan.current_tool,
             event_type=event_type,
             message=message,
-            context_json=context or {},
+            context_json=safe_context,
         )
     )
-    session.add(Log(scan_id=scan.id, level=level.lower(), message=message, context={"event_type": event_type, **(context or {})}))
-    _write_runtime_log(scan.id, now, level, phase or scan.current_phase, agent or scan.current_agent, tool or scan.current_tool, message, context or {})
+    session.add(Log(scan_id=scan.id, level=level.lower(), message=message, context=summarize_for_db_log({"event_type": event_type, **safe_context})))
+    _write_runtime_log(scan.id, now, level, phase or scan.current_phase, agent or scan.current_agent, tool or scan.current_tool, message, safe_context)
     session.flush()
     session.commit()
     if live and console:
@@ -88,10 +90,11 @@ def _write_runtime_log(scan_id: int, timestamp: datetime, level: str, phase: str
     log_dir = get_settings().log_dir
     log_dir.mkdir(parents=True, exist_ok=True)
     path = log_dir / f"scan-{scan_id}.log"
+    safe_context = summarize_for_db_log(context or {})
     line = (
         f"{timestamp.strftime('%Y-%m-%dT%H:%M:%SZ')} {level.upper()} scan={scan_id} "
         f"phase={phase or '-'} agent={agent or '-'} tool={tool or '-'} "
-        f"{message} context={json.dumps(context, default=str, sort_keys=True)}\n"
+        f"{message} context={json.dumps(safe_context, default=str, sort_keys=True)}\n"
     )
     with path.open("a", encoding="utf-8") as handle:
         handle.write(line)

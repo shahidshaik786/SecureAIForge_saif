@@ -42,6 +42,33 @@ class ProgressEventTests(unittest.TestCase):
         self.assertTrue(session.commit_called)
         self.assertEqual(scan.current_phase, "precheck")
 
+    def test_emit_progress_accepts_circular_context(self) -> None:
+        class FakeSession:
+            def __init__(self):
+                self.added = []
+
+            def add(self, item):
+                self.added.append(item)
+
+            def flush(self):
+                pass
+
+            def commit(self):
+                pass
+
+        original_write_runtime_log = progress._write_runtime_log
+        session = FakeSession()
+        scan = SimpleNamespace(id=124, last_activity_at=None, current_phase=None, current_agent=None, current_tool=None, progress_message=None)
+        context = {"name": "loop"}
+        context["self"] = context
+        try:
+            progress._write_runtime_log = lambda *args, **kwargs: None
+            progress.emit_progress(session, scan, "circular", phase="precheck", event_type="debug", context=context)
+        finally:
+            progress._write_runtime_log = original_write_runtime_log
+        event = session.added[0]
+        self.assertIn("circular_ref", str(event.context_json))
+
 
 if __name__ == "__main__":
     unittest.main()

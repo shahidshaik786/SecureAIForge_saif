@@ -613,6 +613,10 @@ def add_api_routes(app: FastAPI) -> None:
     def api_discovery_sources(scan_id: int):
         return api_response(services.discovery_sources(scan_id))
 
+    @app.get("/api/scans/{scan_id}/tool-install-events")
+    def api_tool_install_events(scan_id: int):
+        return api_response(services.tool_install_events(scan_id))
+
     @app.get("/api/scans/{scan_id}/debug-export")
     def api_debug_export(scan_id: int, format: str = "json"):
         with session_scope() as session:

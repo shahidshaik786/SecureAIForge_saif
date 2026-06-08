@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     ai_trace_every_call: bool = Field(default=True, alias="SAIF_AI_TRACE_EVERY_CALL")
     max_parallel_ai_calls: int = Field(default=1, alias="SAIF_MAX_PARALLEL_AI_CALLS")
     queue_ai_calls: bool = Field(default=True, alias="SAIF_QUEUE_AI_CALLS")
+    ai_advisor_max_calls_per_scan: int = Field(default=5, alias="SAIF_AI_ADVISOR_MAX_CALLS_PER_SCAN")
     low_resource_mode: bool = Field(default=True, alias="SAIF_LOW_RESOURCE_MODE")
     demo_project_name: str = Field(default="saif-demo", alias="SAIF_PROJECT_NAME")
     authorized_testing_mode: bool = Field(default=True, alias="SAIF_AUTHORIZED_TESTING_MODE")
@@ -72,6 +73,12 @@ class Settings(BaseSettings):
     dashboard_password: str | None = Field(default=None, alias="SAIF_DASHBOARD_PASSWORD")
     allow_secret_view: bool = Field(default=False, alias="SAIF_ALLOW_SECRET_VIEW")
     public_input_validation_allowed: bool = Field(default=False, alias="SAIF_PUBLIC_INPUT_VALIDATION_ALLOWED")
+    autonomous_tool_install: bool = Field(default=True, alias="SAIF_AUTONOMOUS_TOOL_INSTALL")
+    dynamic_tool_install: bool = Field(default=True, alias="SAIF_DYNAMIC_TOOL_INSTALL")
+    ollama_can_suggest_install_commands: bool = Field(default=True, alias="SAIF_OLLAMA_CAN_SUGGEST_INSTALL_COMMANDS")
+    tool_install_max_retries: int = Field(default=3, alias="SAIF_TOOL_INSTALL_MAX_RETRIES")
+    tool_install_require_authorized_mode: bool = Field(default=True, alias="SAIF_TOOL_INSTALL_REQUIRE_AUTHORIZED_MODE")
+    tool_install_lab_mode: bool = Field(default=True, alias="SAIF_TOOL_INSTALL_LAB_MODE")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

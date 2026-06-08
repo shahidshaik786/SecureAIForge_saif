@@ -211,6 +211,9 @@ case "$COMMAND" in
   install-tools)
     run_saif install-tools "$@"
     ;;
+  install-tool)
+    run_saif install-tool "$@"
+    ;;
   debug-export)
     run_saif debug-export "$@"
     ;;
@@ -384,6 +387,7 @@ Commands:
   init-db
   list-testcases
   install-tools
+  install-tool <tool>
   debug-export --scan-id 1
   create-project [--target http://host:port]
   scan --target http://host:port

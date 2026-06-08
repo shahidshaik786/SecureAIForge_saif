@@ -168,6 +168,13 @@ def prepare_selected_tools(selected_tools: list[str], console: Console | None = 
         if auto_install and dependency in {*APT_INSTALL_TOOLS, "katana"}:
             console.print(f"Attempting install: {dependency}")
             attempt = _install_dependency(dependency)
+        elif auto_install and get_settings().dynamic_tool_install and get_settings().autonomous_tool_install:
+            attempt = ToolInstallAttempt(
+                tool=dependency,
+                attempted=False,
+                status="dynamic_install_pending",
+                reason=f"{dependency} is missing; Ollama-guided dynamic installation may resolve this during authorized execution or via ./saif.sh install-tool {dependency}",
+            )
         else:
             attempt = ToolInstallAttempt(
                 tool=dependency,
@@ -179,6 +186,8 @@ def prepare_selected_tools(selected_tools: list[str], console: Console | None = 
         after = check_runtime_tools()
         before = after
         if _tool_ready(tool, after):
+            executable_tools.append(tool)
+        elif attempt.status == "dynamic_install_pending":
             executable_tools.append(tool)
     final_status = check_runtime_tools()
     return ToolPreparation(

@@ -443,8 +443,26 @@ def scan_detail(session: Session, scan_id: int) -> dict:
         "request_map": request_map(scan_id),
         "ai_trace_index": ai_trace_index(scan_id),
         "agent_reactions": agent_reactions(scan_id),
+        "tool_install_events": tool_install_events(scan_id),
         "actions": scan_actions(session, scan),
     }
+
+
+def tool_install_events(scan_id: int) -> list[dict]:
+    path = get_settings().evidence_dir / f"scan-{scan_id}" / "tool_install_events.jsonl"
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except Exception:
+            value = {"raw": line[:2000]}
+        if isinstance(value, dict):
+            rows.append(safe_json(value))
+    return rows
 
 
 def table(session: Session, scan_id: int, model, order=True) -> list[dict]:

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from saif.config import get_settings
 from saif.db.models import Evidence, Finding, PipelineArtifact, PayloadAttempt, Scan, ToolRun
 from saif.services.case_management import scan_target
+from saif.utils.json_safety import make_json_safe
 
 
 def generate_full_ai_debug_export(session: Session, scan_id: int) -> tuple[Path, Path]:
@@ -35,9 +36,11 @@ def generate_full_ai_debug_export(session: Session, scan_id: int) -> tuple[Path,
     coverage_gaps = [_row_evidence(item) for item in session.scalars(select(Evidence).where(Evidence.scan_id == scan_id, Evidence.kind == "coverage_gap")).all()]
     errors = [item for item in tool_runs if str(item.get("status") or "").lower() in {"execution_error", "failed", "tool_install_failed"}]
     auth_gate = (scan.scan_config or {}).get("auth_gate") or {}
+    crash = (scan.scan_config or {}).get("crash") or {}
     workflow_inventory = _artifact_data(artifacts, "workflow_request_inventory")
     behavior_proof = _artifact_data(artifacts, "authenticated_behavior_proof")
     selected_tool_plan = _artifact_data(artifacts, "selected_tool_plan")
+    tool_install_events = _read_jsonl(base / "tool_install_events.jsonl")
     summary = {
         "total_ai_calls": len(ai_trace_index.get("calls") or []),
         "ai_timeouts": len([call for call in ai_trace_index.get("calls") or [] if call.get("status") == "timeout"]),
@@ -48,9 +51,11 @@ def generate_full_ai_debug_export(session: Session, scan_id: int) -> tuple[Path,
     }
     payload = {
         "scan_id": scan_id,
+        "status": scan.status,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "target": scan_target(session, scan),
         "ollama_profile": get_settings().ollama_profile,
+        "crash": crash,
         "ai_trace_index": ai_trace_index,
         "all_ai_traces": all_ai_traces,
         "agent_reactions": agent_reactions,
@@ -63,11 +68,13 @@ def generate_full_ai_debug_export(session: Session, scan_id: int) -> tuple[Path,
         "tool_runs": tool_runs,
         "findings": findings,
         "coverage_gaps": coverage_gaps,
+        "tool_install_events": tool_install_events,
         "errors": errors,
         "summary": summary,
     }
     json_path = debug_dir / f"scan-{scan_id}-full-ai-debug.json"
     html_path = debug_dir / f"scan-{scan_id}-full-ai-debug.html"
+    payload = make_json_safe(payload)
     json_path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str), encoding="utf-8")
     html_path.write_text(_html(payload), encoding="utf-8")
     return json_path, html_path
@@ -82,6 +89,8 @@ def _html(payload: dict) -> str:
         ("Agent Reactions", payload.get("agent_reactions")),
         ("Request Map", payload.get("request_map")),
         ("Auth Gate", payload.get("auth_gate")),
+        ("Crash", payload.get("crash")),
+        ("Tool Install Events", payload.get("tool_install_events")),
         ("Coverage Gaps", payload.get("coverage_gaps")),
         ("Tool Runs", payload.get("tool_runs")),
         ("Errors", payload.get("errors")),

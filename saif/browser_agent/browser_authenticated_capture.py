@@ -19,7 +19,9 @@ def capture_authenticated_browser_traffic(scan_id: int, target_url: str, storage
                 "error": str(exc),
                 "observed_endpoints": [],
                 "message": "Browser capture unavailable: Playwright not installed",
-                "install_commands": ["pip install playwright", "python -m playwright install chromium"],
+                "install_commands": [".venv/bin/python -m pip install playwright", ".venv/bin/python -m playwright install chromium"],
+                "windows_install_commands": [".venv\\Scripts\\python.exe -m pip install playwright", ".venv\\Scripts\\python.exe -m playwright install chromium"],
+                "auth_coverage_impact": "Authenticated crawling could not use browser-observed XHR/fetch routes until Playwright is installed.",
             },
         )
 

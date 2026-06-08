@@ -595,7 +595,9 @@ def _emit_ai_event(session: Session | None, scan: Scan | None, event_type: str, 
             context={"stage": stage, **(context or {})},
         )
     except Exception:
-        session.add(Log(scan_id=scan.id, level=level.lower(), message=message, context={"event_type": event_type, "stage": stage, **(context or {})}))
+        from saif.utils.json_safety import summarize_for_db_log
+
+        session.add(Log(scan_id=scan.id, level=level.lower(), message=message, context=summarize_for_db_log({"event_type": event_type, "stage": stage, **(context or {})})))
 
 
 def _event_type_for_stage(stage: str, status: str) -> str:

@@ -56,16 +56,16 @@ def runtime_for_stage(stage: str) -> OllamaRuntime:
             queue_ai_calls=True,
         )
     per_attempt = {
-        "initial_planning": 240,
-        "response_advisor": 180,
-        "response_review": 180,
-        "response_analysis": 180,
-        "payload_strategy": 180,
-        "evidence_review": 240,
-        "finding_review": 180,
-        "report_wording": 240,
-        "phase_decision": 180,
-    }.get(stage_key, 180)
+        "initial_planning": 180,
+        "response_advisor": 90,
+        "response_review": 90,
+        "response_analysis": 90,
+        "payload_strategy": 120,
+        "evidence_review": 120,
+        "finding_review": 120,
+        "report_wording": 120,
+        "phase_decision": 90,
+    }.get(stage_key, 90)
     max_attempts = max(1, int(settings.ollama_max_retries or 1))
     if settings.low_resource_mode:
         max_attempts = min(max_attempts, 1)
@@ -75,8 +75,8 @@ def runtime_for_stage(stage: str) -> OllamaRuntime:
         per_attempt_timeout_seconds=per_attempt,
         total_budget_seconds=per_attempt * max_attempts + 10,
         max_attempts=max_attempts,
-        num_ctx=2048,
-        num_predict=_predict_for_stage(stage_key, initial=384, advisor=256, report=512),
+        num_ctx=1536,
+        num_predict=_predict_for_stage(stage_key, initial=256, advisor=128, report=256),
         temperature=0.1,
         parallel_ai_calls=1,
         queue_ai_calls=True,
