@@ -49,7 +49,11 @@ class InstallAgentTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "completed")
             self.assertIn("good install", calls)
-            self.assertTrue((Path(tmp) / "scan-7" / "tool_install_events.jsonl").exists())
+            events_path = Path(tmp) / "scan-7" / "tool_install_events.jsonl"
+            self.assertTrue(events_path.exists())
+            text = events_path.read_text(encoding="utf-8")
+            self.assertIn("tool_install_summary", text)
+            self.assertIn("installed_and_resumed", text)
 
 
 if __name__ == "__main__":

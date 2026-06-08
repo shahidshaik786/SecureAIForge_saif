@@ -41,6 +41,8 @@ def generate_full_ai_debug_export(session: Session, scan_id: int) -> tuple[Path,
     behavior_proof = _artifact_data(artifacts, "authenticated_behavior_proof")
     selected_tool_plan = _artifact_data(artifacts, "selected_tool_plan")
     tool_install_events = _read_jsonl(base / "tool_install_events.jsonl")
+    auto_install_attempts = [row for row in tool_install_events if row.get("event_type") == "tool_install_summary"]
+    browser_capture = _artifact_data(artifacts, "browser_authenticated_capture")
     summary = {
         "total_ai_calls": len(ai_trace_index.get("calls") or []),
         "ai_timeouts": len([call for call in ai_trace_index.get("calls") or [] if call.get("status") == "timeout"]),
@@ -69,6 +71,8 @@ def generate_full_ai_debug_export(session: Session, scan_id: int) -> tuple[Path,
         "findings": findings,
         "coverage_gaps": coverage_gaps,
         "tool_install_events": tool_install_events,
+        "auto_install_attempts": auto_install_attempts,
+        "browser_capture_status": browser_capture,
         "errors": errors,
         "summary": summary,
     }
@@ -91,6 +95,7 @@ def _html(payload: dict) -> str:
         ("Auth Gate", payload.get("auth_gate")),
         ("Crash", payload.get("crash")),
         ("Tool Install Events", payload.get("tool_install_events")),
+        ("Browser Capture", payload.get("browser_capture_status")),
         ("Coverage Gaps", payload.get("coverage_gaps")),
         ("Tool Runs", payload.get("tool_runs")),
         ("Errors", payload.get("errors")),

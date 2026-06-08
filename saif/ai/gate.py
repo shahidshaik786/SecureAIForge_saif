@@ -525,8 +525,34 @@ def _persist_failed_ai_trace(
 
 def log_ai_context(session: Session, scan: Scan, ai_context: AIContext, parsed_intent: dict, selected_target: str, selected_tools: list[str]) -> None:
     persist_ai_trace_from_validation(session, scan, ai_context.scan_plan.get("ai_validation"), "accepted")
-    if ai_context.ai_call_attempts:
-        pass
+    if ai_context.ai_call_attempts and not ai_context.scan_plan.get("ai_validation"):
+        final_statuses = {str(item.get("response_status") or "") for item in ai_context.ai_call_attempts}
+        trace_status = "timeout" if "failed_ai_timeout" in final_statuses else "failed"
+        persist_ai_trace_from_validation(
+            session,
+            scan,
+            {
+                "approved": False,
+                "reason": ai_context.scan_plan.get("ai_planning_error") or "AI planning attempt failed; deterministic fallback continued.",
+                "decision": None,
+                "ai_call_attempts": ai_context.ai_call_attempts,
+                "ai_trace": {
+                    "stage": "initial_planning",
+                    "phase": "ai_planning",
+                    "contract": {
+                        "scope": {"target": selected_target},
+                        "allowed_actions": ["suggest_test_plan"],
+                        "evidence": {"prompt": ai_context.prompt[:1200], "selected_tools": selected_tools},
+                        "timeout_seconds": get_settings().ollama_timeout_seconds,
+                        "retry_limit": get_settings().ollama_max_retries,
+                    },
+                    "model": ai_context.model,
+                    "base_url": ai_context.base_url,
+                    "raw_response": "",
+                },
+            },
+            trace_status,
+        )
     session.add(
         Log(
             scan_id=scan.id,

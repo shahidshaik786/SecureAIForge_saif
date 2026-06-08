@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
 from saif.config import get_settings
 from saif.utils.json_safety import make_json_safe
@@ -63,6 +62,10 @@ def run_install_plan(
     required_for: str,
     reason: str,
     install_plan: dict,
+    requested_by: str = "tool_manager_agent",
+    ollama_status: str = "not_requested",
+    fallback_plan_used: bool = False,
+    resumed_phase: str | None = None,
     command_runner: CommandRunner | None = None,
     correction_provider: CorrectionProvider | None = None,
     max_retries: int | None = None,
@@ -80,7 +83,9 @@ def run_install_plan(
         result = _execute_plan_once(scan_id, tool, capability, required_for, reason, current_plan, attempt_index, command_runner, timeout)
         events.append(result)
         if result.get("status") == "completed":
-            return {"status": "completed", "tool": tool, "attempts": events, "evidence_path": str(evidence_file(scan_id))}
+            summary = _summary_event(scan_id, tool, capability, required_for, requested_by, ollama_status, fallback_plan_used, events, True, resumed_phase, "installed_and_resumed")
+            _append_event(scan_id, summary)
+            return {"status": "completed", "tool": tool, "attempts": events, "summary_event": summary, "evidence_path": str(evidence_file(scan_id))}
         if attempt_index > retries or correction_provider is None:
             break
         corrected = correction_provider(current_plan, result)
@@ -88,7 +93,9 @@ def run_install_plan(
             break
         current_plan = dict(corrected)
         _append_event(scan_id, {"event_type": "tool_install_retry_plan_received", "tool": tool, "attempt": attempt_index + 1, "plan": current_plan})
-    return {"status": "coverage_gap", "tool": tool, "reason": "tool installation failed after retries", "attempts": events, "evidence_path": str(evidence_file(scan_id))}
+    summary = _summary_event(scan_id, tool, capability, required_for, requested_by, ollama_status, fallback_plan_used, events, False, resumed_phase, "install_failed_skipped")
+    _append_event(scan_id, summary)
+    return {"status": "coverage_gap", "tool": tool, "reason": "tool installation failed after retries", "attempts": events, "summary_event": summary, "evidence_path": str(evidence_file(scan_id))}
 
 
 def _execute_plan_once(
@@ -168,18 +175,67 @@ def _run_shell_command(command: str, timeout: int) -> subprocess.CompletedProces
         return subprocess.CompletedProcess(command, 127, stdout="", stderr=str(exc))
 
 
+def _summary_event(
+    scan_id: int,
+    tool: str,
+    capability: str,
+    required_for: str,
+    requested_by: str,
+    ollama_status: str,
+    fallback_plan_used: bool,
+    events: list[dict],
+    success: bool,
+    resumed_phase: str | None,
+    final_status: str,
+) -> dict:
+    command_rows = [row for event in events for row in event.get("commands", []) if isinstance(row, dict)]
+    verify_rows = [row for event in events for row in event.get("verify", []) if isinstance(row, dict)]
+    return {
+        "event_type": "tool_install_summary",
+        "scan_id": scan_id,
+        "tool": tool,
+        "capability": capability,
+        "required_for": required_for,
+        "requested_by": requested_by,
+        "ollama_install_plan_requested": ollama_status != "not_requested",
+        "ollama_status": ollama_status,
+        "fallback_plan_used": bool(fallback_plan_used),
+        "commands_run": command_rows,
+        "verify_commands_run": verify_rows,
+        "install_success": bool(success),
+        "verify_success": bool(success) and (not verify_rows or all(row.get("exit_code") == 0 for row in verify_rows)),
+        "resumed_phase": resumed_phase or required_for,
+        "final_status": final_status,
+    }
+
+
 def _append_event(scan_id: int, event: dict) -> None:
     path = evidence_file(scan_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = make_json_safe({"time": datetime.now(timezone.utc).isoformat(), **event})
+    payload = make_json_safe({"time": datetime.now(timezone.utc).isoformat(), "scan_id": scan_id, **event})
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
 
 
 def basic_install_plan(tool: str) -> dict:
-    return {
-        "tool": tool,
-        "commands": [f"{tool} --version"],
-        "verify_commands": [f"{tool} --version"],
-        "notes": "Explicit install-tool fallback plan. Ollama-guided plans can replace this when advisor is available.",
+    return deterministic_install_plan(tool)
+
+
+def deterministic_install_plan(tool: str) -> dict:
+    tool = str(tool or "").strip().lower()
+    plans = {
+        "playwright": {
+            "commands": [".venv/bin/python -m pip install playwright", ".venv/bin/python -m playwright install chromium"],
+            "verify_commands": [".venv/bin/python -c \"import playwright; print('ok')\""],
+        },
+        "chromium": {
+            "commands": [".venv/bin/python -m playwright install chromium"],
+            "verify_commands": [".venv/bin/python -c \"from playwright.sync_api import sync_playwright; print('ok')\""],
+        },
+        "ffuf": {"commands": ["sudo apt-get update", "sudo apt-get install -y ffuf"], "verify_commands": ["ffuf -V"]},
+        "gobuster": {"commands": ["sudo apt-get update", "sudo apt-get install -y gobuster"], "verify_commands": ["gobuster version"]},
+        "nmap": {"commands": ["sudo apt-get update", "sudo apt-get install -y nmap"], "verify_commands": ["nmap --version"]},
+        "katana": {"commands": ["go install github.com/projectdiscovery/katana/cmd/katana@latest"], "verify_commands": ["katana -version"]},
     }
+    plan = plans.get(tool, {"commands": [f"{tool} --version"], "verify_commands": [f"{tool} --version"]})
+    return {"tool": tool, **plan, "notes": "Deterministic fallback install plan used when AI install advice is unavailable."}

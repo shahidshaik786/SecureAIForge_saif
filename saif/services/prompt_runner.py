@@ -20,6 +20,8 @@ from sqlalchemy.orm import Session
 from saif.analyzers.parameter_miner import mine_parameters
 from saif.analyzers.passive_analyzer import analyze_request_response, is_important_for_ai
 from saif.agents.ollama_response_advisor import review_important_response
+from saif.agents.install_agent import deterministic_install_plan, run_install_plan
+from saif.agents.tool_manager_agent import ask_ollama_for_install_plan
 from saif.ai.advisor import ask_ai_for_payload_strategy, ask_ai_for_report_wording
 from saif.ai.gate import AIContext, ai_review_evidence, log_ai_context, log_ai_review
 from saif.browser_agent.browser_authenticated_capture import capture_authenticated_browser_traffic
@@ -908,6 +910,34 @@ def run_prompt_scan(
                 break
             agent_name = _agent_for_tool(tool)
             phase_name = _phase_for_tool(tool)
+            missing_dependency = _missing_runtime_dependency(tool)
+            if missing_dependency and _tool_install_enabled(scan):
+                install_result = _attempt_missing_tool_install(
+                    session,
+                    scan,
+                    tool=missing_dependency,
+                    capability=tool,
+                    required_for=tool,
+                    requested_by=agent_name,
+                    target_url=target_url,
+                )
+                missing_dependency = _missing_runtime_dependency(tool)
+                if install_result.get("status") != "completed" or missing_dependency:
+                    result = _record_dependency_block(
+                        session,
+                        scan,
+                        tool,
+                        {
+                            "missing_artifact": missing_dependency or TOOL_DEPENDENCIES.get(tool) or "runtime_tool",
+                            "reason": f"Required runtime tool could not be installed for {tool}",
+                            "how_to_make_testable": f"Install {missing_dependency or TOOL_DEPENDENCIES.get(tool)} manually or inspect tool_install_events.jsonl for failure details.",
+                        },
+                        console=console,
+                    )
+                    tool_results.append(result)
+                    if tool in planned_cases:
+                        planned_cases[tool].status = result.get("status") or RunStatus.MISSING_PREREQUISITE.value
+                    continue
             if _auth_gate_blocks_tool(scan, tool):
                 _mark_auth_gate_tool_blocked(session, scan, tool)
                 continue
@@ -4484,6 +4514,32 @@ def _record_browser_authenticated_capture(session: Session, scan: Scan, target_u
         capture = capture_authenticated_browser_traffic(scan.id, target_url, storage_state=storage_state)
     except Exception as exc:
         capture = {"status": "skipped_browser_capture_error", "error": str(exc), "observed_endpoints": []}
+    if capture.get("status") == "skipped_playwright_missing" and _tool_install_enabled(scan):
+        install_result = _attempt_missing_tool_install(
+            session,
+            scan,
+            tool="playwright",
+            capability="browser_capture",
+            required_for="browser_authenticated_capture",
+            requested_by="browser_workflow_agent",
+            target_url=target_url,
+        )
+        if install_result.get("status") == "completed":
+            try:
+                retry_capture = capture_authenticated_browser_traffic(scan.id, target_url, storage_state=storage_state)
+            except Exception as exc:
+                retry_capture = {"status": "skipped_browser_capture_error", "error": str(exc), "observed_endpoints": []}
+            capture = {**retry_capture, "initial_status": "installing_missing_tool", "install_result": install_result}
+        else:
+            capture = {
+                **capture,
+                "initial_status": "installing_missing_tool",
+                "status": "skipped_install_failed",
+                "required_tool": "playwright",
+                "required_capability": "browser_capture",
+                "required_for": "browser_authenticated_capture",
+                "install_result": install_result,
+            }
     observed_endpoints = capture.get("observed_endpoints") or []
     for item in observed_endpoints:
         _endpoint(
@@ -4519,6 +4575,139 @@ def _record_browser_authenticated_capture(session: Session, scan: Scan, target_u
     _build_workflow_request_inventory(session, scan, target_url)
     _build_authenticated_behavior_proof(session, scan, target_url)
     return {"status": capture["status"], "evidence_path": str(path), "network_request_count": len(capture["network_requests"])}
+
+
+def _tool_install_enabled(scan: Scan) -> bool:
+    settings = get_settings()
+    if not settings.autonomous_tool_install or not settings.dynamic_tool_install:
+        return False
+    if settings.tool_install_require_authorized_mode and not getattr(scan, "authorized_testing_mode", False):
+        return False
+    return True
+
+
+def _missing_runtime_dependency(tool_name: str) -> str | None:
+    dependency = TOOL_DEPENDENCIES.get(tool_name)
+    if not dependency:
+        return None
+    try:
+        status = check_runtime_tools()
+    except Exception:
+        return dependency
+    return None if status.get(dependency) else dependency
+
+
+def _attempt_missing_tool_install(
+    session: Session,
+    scan: Scan,
+    *,
+    tool: str,
+    capability: str,
+    required_for: str,
+    requested_by: str,
+    target_url: str,
+) -> dict:
+    emit_progress(
+        session,
+        scan,
+        f"missing tool required: {tool}",
+        level="WARNING",
+        phase=required_for,
+        agent=requested_by,
+        tool=tool,
+        event_type="missing_tool_required",
+        context={"required_tool": tool, "required_capability": capability, "required_for": required_for},
+    )
+    scope = {"target": target_url, "allowed_hosts": [urlparse(target_url).hostname] if urlparse(target_url).hostname else []}
+    evidence = {
+        "task": "provide_install_plan_for_missing_tool",
+        "tool": tool,
+        "capability": capability,
+        "required_for": required_for,
+        "os_info": os.name,
+        "shell": "bash",
+        "python": os.sys.executable,
+        "venv_python": ".venv/bin/python",
+        "constraints": {
+            "authorized_testing_mode": bool(getattr(scan, "authorized_testing_mode", False)),
+            "lab_mode": bool(get_settings().tool_install_lab_mode),
+            "low_resource_mode": bool(get_settings().low_resource_mode),
+        },
+    }
+    advisor = {"status": "not_requested", "install_plan": {}}
+    if get_settings().ollama_can_suggest_install_commands:
+        advisor = ask_ollama_for_install_plan(
+            session,
+            scan,
+            tool=tool,
+            capability=capability,
+            phase="tool_need_advisor",
+            scope=scope,
+            evidence=evidence,
+        )
+    plan = advisor.get("install_plan") or {}
+    fallback_used = False
+    if not plan:
+        plan = deterministic_install_plan(tool)
+        fallback_used = True
+        emit_progress(
+            session,
+            scan,
+            f"AI install plan unavailable for {tool}; using deterministic fallback",
+            level="WARNING",
+            phase="tool_need_advisor",
+            agent="tool_manager_agent",
+            tool=tool,
+            event_type="ai_fallback_used",
+            context={"required_tool": tool, "ollama_status": advisor.get("status"), "fallback_plan_used": True},
+        )
+    install_result = run_install_plan(
+        scan_id=scan.id,
+        tool=tool,
+        capability=capability,
+        required_for=required_for,
+        reason=f"{tool} is required for {required_for}",
+        install_plan=plan,
+        requested_by=requested_by,
+        ollama_status=str(advisor.get("status") or "not_requested"),
+        fallback_plan_used=fallback_used,
+        resumed_phase=required_for,
+    )
+    if install_result.get("status") == "completed":
+        emit_progress(
+            session,
+            scan,
+            f"missing tool installed; resuming {required_for}",
+            phase=required_for,
+            agent="tool_manager_agent",
+            tool=tool,
+            event_type="tool_install_completed",
+            context={"required_tool": tool, "resumed_phase": required_for, "evidence_path": install_result.get("evidence_path")},
+        )
+        return install_result
+    gap = {
+        "tool": tool,
+        "capability": capability,
+        "required_for": required_for,
+        "requested_by": requested_by,
+        "install_result": install_result,
+        "reason": f"{tool} installation failed; {required_for} skipped",
+    }
+    path = write_evidence(scan.id, f"coverage_gap_missing_tool_{tool}", gap)
+    session.add(Evidence(scan_id=scan.id, kind="coverage_gap", path=str(path), summary=f"Missing tool install failed: {tool}", metadata_json={"tool": tool, "status": "tool_install_failed"}))
+    _artifact(session, scan, "coverage_gap", f"missing_tool_{tool}", gap)
+    emit_progress(
+        session,
+        scan,
+        f"missing tool install failed: {tool}",
+        level="WARNING",
+        phase=required_for,
+        agent="tool_manager_agent",
+        tool=tool,
+        event_type="tool_install_failed",
+        context={"required_tool": tool, "evidence_path": str(path), "reason": gap["reason"]},
+    )
+    return install_result
 
 
 def _request_id(method: str, url: str, body_shape: dict | None = None) -> str:

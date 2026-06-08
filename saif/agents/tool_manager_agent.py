@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from saif.ai.advisor import ask_ai_for_phase_decision
+from saif.ai.ollama import OllamaTimeoutError
 from saif.db.models import Scan
 
 
@@ -51,19 +52,30 @@ def ask_ollama_for_install_plan(
     evidence: dict,
 ) -> dict:
     if session is None or scan is None:
-        return {}
+        return {"status": "not_requested", "install_plan": {}}
     contract = install_plan_contract(tool=tool, capability=capability, phase=phase, scope=scope, evidence=evidence)
-    decision = ask_ai_for_phase_decision(
-        session,
-        scan,
-        current_phase=phase,
-        scope=scope,
-        evidence=contract,
-        allowed_actions=contract["allowed_actions"],
-        output_schema=INSTALL_PLAN_SCHEMA,
-    )
+    try:
+        decision = ask_ai_for_phase_decision(
+            session,
+            scan,
+            current_phase=phase,
+            scope=scope,
+            evidence=contract,
+            allowed_actions=contract["allowed_actions"],
+            output_schema=INSTALL_PLAN_SCHEMA,
+        )
+    except OllamaTimeoutError:
+        return {"status": "timeout", "install_plan": {}, "reason": "ollama_timeout"}
+    except Exception as exc:
+        return {"status": "failed", "install_plan": {}, "reason": str(exc)}
     payload = decision.get("decision") if isinstance(decision, dict) else {}
-    return _extract_install_plan(payload, tool)
+    plan = _extract_install_plan(payload, tool)
+    return {
+        "status": "completed" if plan and decision.get("approved") else "rejected",
+        "install_plan": plan,
+        "reason": decision.get("reason"),
+        "ai_decision": decision,
+    }
 
 
 def _extract_install_plan(payload: Any, tool: str) -> dict:

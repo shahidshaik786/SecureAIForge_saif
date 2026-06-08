@@ -156,22 +156,32 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
     request_map_payload = _read_scan_json(scan.id, "request_map.json", {"scan_id": scan.id, "total_requests": 0, "requests": []}) if scan else {}
     ai_trace_index_payload = _read_scan_json(scan.id, "ai/ai_trace_index.json", {"scan_id": scan.id, "total_ai_calls": 0, "calls": []}) if scan else {}
     agent_reactions_payload = _read_scan_jsonl(scan.id, "agent_reactions.jsonl") if scan else []
+    tool_install_events_payload = _read_scan_jsonl(scan.id, "tool_install_events.jsonl") if scan else []
+    auto_install_attempts_payload = [item for item in tool_install_events_payload if item.get("event_type") == "tool_install_summary"]
     debug_json = (scan.scan_config or {}).get("full_ai_debug_json") if scan else None
     debug_html = (scan.scan_config or {}).get("full_ai_debug_html") if scan else None
     ai_calls = ai_trace_index_payload.get("calls") or []
+    total_ai_calls = len(ai_calls)
+    timed_out_ai_calls = len([item for item in ai_calls if item.get("status") in {"timeout", "failed_ai_timeout"}])
+    if total_ai_calls == 0:
+        summary_text = "AI advisor was configured but no AI calls were executed. This is an internal SAIF bug."
+    elif timed_out_ai_calls:
+        summary_text = "AI advisor was called but timed out; deterministic fallback continued."
+    else:
+        summary_text = "AI advisor completed; suggestions were accepted/rejected by guardrails."
     ai_debug_summary = {
         "provider": "Ollama",
         "model": ai_plan_context.get("ai_model") or get_settings().ollama_model,
         "ollama_profile": get_settings().ollama_profile,
-        "total_ai_calls": len(ai_calls),
+        "total_ai_calls": total_ai_calls,
         "completed_ai_calls": len([item for item in ai_calls if item.get("status") == "completed"]),
-        "timed_out_ai_calls": len([item for item in ai_calls if item.get("status") == "timeout"]),
+        "timed_out_ai_calls": timed_out_ai_calls,
         "fallback_count": len([item for item in agent_reactions_payload if item.get("action_taken") == "fallback"]),
         "full_debug_json": debug_json,
         "full_debug_html": debug_html,
         "ollama_influenced_execution": any(item.get("used_for_execution") for item in ai_calls),
         "deterministic_fallback_used": any(item.get("action_taken") == "fallback" for item in agent_reactions_payload),
-        "summary_text": "AI advisor was enabled but timed out, deterministic fallback continued" if any(item.get("status") == "timeout" for item in ai_calls) else "AI advisor completed and suggestions were accepted/rejected by deterministic guardrails",
+        "summary_text": summary_text,
     }
     target_classification_context = next((item.data for item in reversed(pipeline_artifacts) if item.name == "target_classification" and item.data), {})
     response_analysis_items = [item.data for item in pipeline_artifacts if item.artifact_type == "response_analysis" and item.data]
@@ -315,7 +325,8 @@ def build_report_payload(session: Session, project_name: str | None = None, scan
         "coverage_status": _coverage_overall(_vulnerability_coverage_matrix(tool_runs, test_cases), application_profiles),
         "installed_tools": tool_prep_context.get("installed_tools", []),
         "missing_tools": tool_prep_context.get("missing_tools", []),
-        "auto_install_attempts": tool_prep_context.get("auto_install_attempts", []),
+        "auto_install_attempts": auto_install_attempts_payload or tool_prep_context.get("auto_install_attempts", []),
+        "tool_install_events": tool_install_events_payload[-200:],
         "tool_install_failed_entries": [item for item in unavailable_tools if item["status"] == "tool_install_failed"],
         "missing_tool_entries": [item for item in unavailable_tools if item["status"] == "missing_tool"],
         "unavailable_tools": unavailable_tools,

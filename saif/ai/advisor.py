@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from saif.ai.ollama import OllamaClient
 from saif.ai.runtime import runtime_for_stage
-from saif.ai.tracing import append_ai_trace_index, begin_ai_trace, complete_ai_trace, mask_secrets, stage_timeout
+from saif.ai.tracing import append_agent_reaction, append_ai_trace_index, begin_ai_trace, complete_ai_trace, mask_secrets, stage_timeout
 from saif.config import get_settings
 from saif.db.models import AiCallRun, AiDecision, Evidence, Log, Scan
 from saif.services.pentest_engine import ai_decision_contract, validate_ai_decision
@@ -501,6 +501,7 @@ def _record_ai_decision(
                 "trace_path": str(path),
             },
         )
+        append_agent_reaction(scan.id, payload, accepted=accepted, rejected_reasons=rejected_reasons)
     session.add(Evidence(scan_id=scan.id, kind="ai_decision", path=str(path), summary=f"AI advisor {stage}: {status}", metadata_json={"phase": phase, "stage": stage, "status": status}))
     session.add(
         AiDecision(
